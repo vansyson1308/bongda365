@@ -147,6 +147,10 @@ predictions.start(data => {
 // ── SofaScore Polling ──
 let cachedLive = null;
 
+// Proxy URL: if SOFA_PROXY_URL is set, route API calls through local proxy (bypasses Cloudflare)
+// Otherwise fall back to direct SofaScore API (works from home IP, blocked from datacenter IPs)
+const SOFA_PROXY_URL = process.env.SOFA_PROXY_URL || null;
+
 // Rotate User-Agents to avoid Cloudflare fingerprinting
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -158,6 +162,29 @@ const USER_AGENTS = [
 let uaIdx = 0;
 
 function fetchSofa(urlPath) {
+  // If SOFA_PROXY_URL is set, route through local proxy (home IP, not blocked)
+  if (SOFA_PROXY_URL) return fetchViaProxy(urlPath);
+  return fetchDirect(urlPath);
+}
+
+// Route through local Cloudflare Tunnel proxy
+function fetchViaProxy(urlPath) {
+  return new Promise((resolve, reject) => {
+    const proxyUrl = new URL(SOFA_PROXY_URL + urlPath);
+    const mod = proxyUrl.protocol === 'https:' ? https : http;
+    const req = mod.get(proxyUrl.href, { headers: { 'Accept': '*/*' } }, res => {
+      if (res.statusCode === 304) { resolve(null); return; }
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('proxy timeout')); });
+  });
+}
+
+// Direct to SofaScore (works from home IP, blocked from datacenter)
+function fetchDirect(urlPath) {
   return new Promise((resolve, reject) => {
     const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
     const opts = {
@@ -181,21 +208,11 @@ function fetchSofa(urlPath) {
     };
     const req = https.get(opts, res => {
       if (res.statusCode === 304) { resolve(null); return; }
-
-      // Handle gzip/br compressed responses
       const encoding = res.headers['content-encoding'];
       let stream = res;
-      if (encoding === 'gzip') {
-        const zlib = require('zlib');
-        stream = res.pipe(zlib.createGunzip());
-      } else if (encoding === 'br') {
-        const zlib = require('zlib');
-        stream = res.pipe(zlib.createBrotliDecompress());
-      } else if (encoding === 'deflate') {
-        const zlib = require('zlib');
-        stream = res.pipe(zlib.createInflate());
-      }
-
+      if (encoding === 'gzip') { const zlib = require('zlib'); stream = res.pipe(zlib.createGunzip()); }
+      else if (encoding === 'br') { const zlib = require('zlib'); stream = res.pipe(zlib.createBrotliDecompress()); }
+      else if (encoding === 'deflate') { const zlib = require('zlib'); stream = res.pipe(zlib.createInflate()); }
       const chunks = [];
       stream.on('data', c => chunks.push(c));
       stream.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
