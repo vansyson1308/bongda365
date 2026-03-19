@@ -3,7 +3,7 @@ class SofaAPI {
   constructor() {
     this.base = CONFIG.API;
     this.cache = new Map();
-    this.ttl = 20000;
+    this.ttl = 5000;
   }
 
   async get(path) {

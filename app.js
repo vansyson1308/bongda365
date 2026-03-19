@@ -168,6 +168,13 @@ const app = {
     } catch { if (el) el.innerHTML = this._err('Không thể kết nối. Hãy chắc chắn server.js đang chạy.'); }
   },
 
+  _updateLiveFromSocket(events) {
+    this.liveMatches = (events || []).map(e => api.mapEvent(e));
+    this._renderLiveMatches();
+    this._updateTicker(this.liveMatches);
+    this._updateLiveCount(this.liveMatches);
+  },
+
   _renderLiveMatches() {
     const el = document.getElementById('liveMatches');
     if (!el) return;
@@ -1069,9 +1076,10 @@ const app = {
   startLivePolling() {
     setInterval(async () => {
       if (router.currentPage === '/' || router.currentPage === '/live') {
-        await this._loadLive();
+        // Only poll via HTTP when Socket.io is disconnected (fallback)
+        if (!chat.socket?.connected) await this._loadLive();
       }
-    }, 30000);
+    }, CONFIG.REFRESH);
   },
 
   _updateTicker(matches) {

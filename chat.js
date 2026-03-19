@@ -10,7 +10,22 @@ const chat = {
   init() {
     if (this.initialized) return; // Prevent duplicate listeners
     this.initialized = true;
-    try { this.socket = io(); } catch { console.warn('Socket.io not available'); return; }
+    try {
+      this.socket = io({
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        reconnectionAttempts: Infinity,
+        timeout: 10000,
+      });
+      this.socket.on('connect', () => {
+        console.log('Socket.io connected');
+        if (typeof app !== 'undefined') app._loadLive();
+      });
+      this.socket.on('disconnect', (reason) => {
+        console.log('Socket.io disconnected:', reason);
+      });
+    } catch { console.warn('Socket.io not available'); return; }
     this.socket.on('chat_msg', msg => this.addMessage(msg));
     this.socket.on('reaction', data => this.showReaction(data?.emoji));
     this.socket.on('commentary', entry => this.addCommentary(entry));
@@ -18,8 +33,15 @@ const chat = {
     this.socket.on('predictions', data => this.updatePredictions(data));
     this.socket.on('match_event', event => this.onMatchEvent(event));
     this.socket.on('live_event', event => this.onLiveEvent(event));
-    this.socket.on('live_update', () => {
-      if (typeof app !== 'undefined' && typeof router !== 'undefined' && (router.currentPage === '/' || router.currentPage === '/live')) app._loadLive();
+    this.socket.on('live_update', (data) => {
+      if (typeof app !== 'undefined' && typeof router !== 'undefined'
+          && (router.currentPage === '/' || router.currentPage === '/live')) {
+        if (data?.events) {
+          app._updateLiveFromSocket(data.events);
+        } else {
+          app._loadLive();
+        }
+      }
     });
   },
 

@@ -13,7 +13,7 @@ const predictions = require('./prediction-engine');
 
 const PORT = process.env.PORT || 3000;
 const POLL_MS = 5000;
-const INCIDENT_POLL_MS = 15000; // Fetch incidents every 15s
+const INCIDENT_POLL_MS = 10000; // Fetch incidents every 10s
 const STAT_POLL_MS = 30000; // Fetch stats every 30s
 const MIME = { '.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon','.jpg':'image/jpeg','.gif':'image/gif','.woff2':'font/woff2' };
 
@@ -77,7 +77,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ── Socket.io ──
-const io = new SocketIO(server, { cors: { origin: '*' } });
+const io = new SocketIO(server, {
+  cors: { origin: '*' },
+  perMessageDeflate: { threshold: 1024 },
+});
 
 io.on('connection', socket => {
   // Join match room
@@ -239,8 +242,8 @@ async function pollLive() {
     // Run event detection (emits to bus)
     detector.process(events);
 
-    // Notify all clients to refresh
-    io.emit('live_update', { ts: Date.now(), count: events.length });
+    // Push full data to all clients (no re-fetch needed)
+    io.emit('live_update', { ts: Date.now(), count: events.length, events });
   } catch (e) { /* silent */ }
 }
 
@@ -251,9 +254,14 @@ async function pollIncidents() {
   const liveIds = detector.getLiveMatchIds();
   if (!liveIds.length) return;
 
-  // Fetch 2-3 matches per cycle to avoid rate limiting
-  const batch = liveIds.slice(incidentIdx, incidentIdx + 3);
-  incidentIdx = (incidentIdx + 3) % Math.max(1, liveIds.length);
+  // Priority: recently changed matches first, then rotate through rest
+  const changed = detector.getRecentlyChanged();
+  const regularIds = liveIds.filter(id => !changed.includes(id));
+  const batch = [
+    ...changed,
+    ...regularIds.slice(incidentIdx, incidentIdx + 5)
+  ].slice(0, 6); // Max 6 per cycle
+  incidentIdx = (incidentIdx + 5) % Math.max(1, regularIds.length || 1);
 
   for (const matchId of batch) {
     try {
@@ -336,6 +344,7 @@ server.listen(PORT, '0.0.0.0', () => {
 
   Pages: Live | Match Detail | League | Team | Player | Search
   Poll: Live ${POLL_MS/1000}s | Incidents ${INCIDENT_POLL_MS/1000}s | Stats ${STAT_POLL_MS/1000}s
+  Optimized: Socket.io push + perMessageDeflate + priority incident polling
   Features: AI Commentary | Predictions | Chat | Viral Cards
   `);
 });

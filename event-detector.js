@@ -46,6 +46,7 @@ class EventDetector {
         if (old.hs !== null && (hs !== old.hs || as !== old.as)) {
           const scoringTeam = hs > old.hs ? 'home' : 'away';
           const teamName = scoringTeam === 'home' ? home : away;
+          snap._scoreChanged = true;
           bus.fire('goal', {
             matchId: id, team: scoringTeam, teamName, minute,
             home, away, homeId, awayId, league,
@@ -189,6 +190,18 @@ class EventDetector {
     if (desc.includes('2nd')) return 45 + Math.max(0, elapsed);
     if (desc.includes('extra')) return 90 + Math.max(0, elapsed);
     return Math.max(0, elapsed);
+  }
+
+  // Get match IDs where score recently changed (for priority polling)
+  getRecentlyChanged() {
+    const changed = [];
+    for (const [id, snap] of this.prev) {
+      if (snap._scoreChanged) {
+        changed.push(id);
+        snap._scoreChanged = false;
+      }
+    }
+    return changed;
   }
 
   // Get live match IDs for incident polling

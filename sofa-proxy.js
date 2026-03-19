@@ -23,7 +23,7 @@ let uaIdx = 0;
 
 // Simple in-memory cache
 const cache = new Map();
-const CACHE_TTL = 15000; // 15s for live data
+const CACHE_TTL = 4000; // 4s for live data (server polls every 5s)
 const CACHE_TTL_STATIC = 300000; // 5min for static data (teams, players, standings)
 
 function getCacheTTL(path) {

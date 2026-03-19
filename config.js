@@ -1,6 +1,6 @@
 const CONFIG = {
   API: '/api/v1',
-  REFRESH: 30000,
+  REFRESH: 10000,
 
   // Season IDs verified 2026-03-19
   LEAGUES: [

@@ -10,3 +10,5 @@ services:
         value: production
       - key: PORT
         value: 3000
+      - key: SOFA_PROXY_URL
+        value: https://sofa-proxy.bongda365.xyz
