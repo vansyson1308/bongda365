@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BongDa365 - Tỉ Số Trực Tiếp | Dự Đoán AI | Chat Live</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- ═══ HEADER ═══ -->
+  <header class="top-bar">
+    <div class="header-inner">
+      <button class="hamburger" id="sidebarToggle">☰</button>
+      <a href="#/" class="logo">
+        <span class="logo-icon">⚽</span>
+        <span class="logo-text">BongDa<span class="accent">365</span></span>
+      </a>
+      <nav class="league-quicklinks" id="leagueQuicklinks"></nav>
+      <div class="header-search" id="headerSearch">
+        <input type="text" id="searchInput" placeholder="Tìm đội, cầu thủ..." autocomplete="off">
+        <div class="search-dropdown" id="searchDropdown"></div>
+      </div>
+      <div class="header-actions">
+        <span class="live-count-badge" id="liveCount">0</span>
+        <span class="date-display" id="currentDate"></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══ TICKER ═══ -->
+  <div class="ticker-bar">
+    <div class="ticker-wrapper"><div class="ticker-content" id="tickerContent"></div></div>
+  </div>
+
+  <!-- ═══ MAIN LAYOUT (Sofascore-style grid) ═══ -->
+  <div class="app-layout" id="appLayout">
+    <!-- Left Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div id="sidebarContent"></div>
+    </aside>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Main Content (router renders here) -->
+    <main class="content-area" id="page-content">
+      <div class="loading-state"><div class="spinner"></div><p>Đang tải...</p></div>
+    </main>
+
+    <!-- Right Panel (for match detail unique features) -->
+    <aside class="right-panel" id="rightPanel" style="display:none">
+      <div class="right-panel-inner">
+        <!-- AI Commentary -->
+        <div class="panel-section">
+          <h3 class="panel-title">🐴 Ngựa Tiên Tri</h3>
+          <div id="commentaryFeed" class="commentary-feed"></div>
+        </div>
+        <!-- Live Predictions -->
+        <div class="panel-section">
+          <h3 class="panel-title">📈 Xác suất</h3>
+          <div id="livePredictions" class="live-predictions"></div>
+        </div>
+        <!-- Chat -->
+        <div class="panel-section">
+          <h3 class="panel-title">💬 Chat</h3>
+          <div class="reaction-bar">
+            <button onclick="chat.sendReaction('⚽')">⚽</button>
+            <button onclick="chat.sendReaction('🔥')">🔥</button>
+            <button onclick="chat.sendReaction('😱')">😱</button>
+            <button onclick="chat.sendReaction('👏')">👏</button>
+            <button onclick="chat.sendReaction('😭')">😭</button>
+            <button onclick="chat.sendReaction('🤡')">🤡</button>
+            <button onclick="chat.sendReaction('💀')">💀</button>
+            <button onclick="chat.sendReaction('🐐')">🐐</button>
+          </div>
+          <div id="chatMessages" class="chat-messages"></div>
+          <div class="chat-input-row">
+            <input type="text" id="chatInput" placeholder="Nhắn gì đi..." maxlength="200"
+              onkeydown="if(event.key==='Enter'){chat.sendMessage(this.value);this.value='';}">
+            <button onclick="chat.sendMessage(document.getElementById('chatInput').value);document.getElementById('chatInput').value='';">Gửi</button>
+          </div>
+        </div>
+        <!-- Viral Card -->
+        <div class="panel-section" id="viralCardSection" style="display:none">
+          <h3 class="panel-title">📸 Chia sẻ</h3>
+          <canvas id="viralCanvas" style="width:100%;max-width:300px;border-radius:8px"></canvas>
+          <div style="margin-top:6px;display:flex;gap:6px">
+            <input type="text" id="cardCaption" placeholder="Caption..." style="flex:1;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:inherit;font-size:12px">
+            <button class="btn-share" onclick="chat.shareCard(document.getElementById('viralCanvas'),document.getElementById('cardCaption').value)">📤</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ═══ FOOTER ═══ -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-col">
+          <h3>BongDa<span class="accent">365</span></h3>
+          <p>Tỉ số trực tiếp, phân tích AI, chat live, dự đoán real-time.</p>
+        </div>
+        <div class="footer-col"><h4>Giải Đấu</h4><ul><li>Premier League</li><li>La Liga</li><li>Serie A</li><li>V-League</li><li>Champions League</li></ul></div>
+        <div class="footer-col"><h4>Tính Năng</h4><ul><li>🐴 Ngựa Tiên Tri AI</li><li>💬 Chat trực tiếp</li><li>📈 Xác suất real-time</li><li>📸 Viral Cards</li></ul></div>
+        <div class="footer-col"><h4>Stack</h4><ul><li>SofaScore API</li><li>Socket.io Real-time</li><li>Event Bus Architecture</li></ul></div>
+      </div>
+      <div class="footer-bottom"><p>&copy; 2026 BongDa365 - 100% real data from SofaScore</p></div>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="config.js"></script>
+  <script src="api.js"></script>
+  <script src="router.js"></script>
+  <script src="favourites.js"></script>
+  <script src="sidebar.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="chat.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
