@@ -147,18 +147,62 @@ predictions.start(data => {
 // ── SofaScore Polling ──
 let cachedLive = null;
 
+// Rotate User-Agents to avoid Cloudflare fingerprinting
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15',
+];
+let uaIdx = 0;
+
 function fetchSofa(urlPath) {
   return new Promise((resolve, reject) => {
+    const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
     const opts = {
-      hostname: 'api.sofascore.com', path: urlPath,
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json, image/*' },
+      hostname: 'api.sofascore.com',
+      path: urlPath,
+      headers: {
+        'User-Agent': ua,
+        'Accept': 'application/json, image/*, */*',
+        'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.sofascore.com/',
+        'Origin': 'https://www.sofascore.com',
+        'Cache-Control': 'no-cache',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+        'Sec-CH-UA': '"Chromium";v="131", "Not_A Brand";v="24"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"',
+      },
     };
-    https.get(opts, res => {
+    const req = https.get(opts, res => {
       if (res.statusCode === 304) { resolve(null); return; }
+
+      // Handle gzip/br compressed responses
+      const encoding = res.headers['content-encoding'];
+      let stream = res;
+      if (encoding === 'gzip') {
+        const zlib = require('zlib');
+        stream = res.pipe(zlib.createGunzip());
+      } else if (encoding === 'br') {
+        const zlib = require('zlib');
+        stream = res.pipe(zlib.createBrotliDecompress());
+      } else if (encoding === 'deflate') {
+        const zlib = require('zlib');
+        stream = res.pipe(zlib.createInflate());
+      }
+
       const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
-    }).on('error', reject);
+      stream.on('data', c => chunks.push(c));
+      stream.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      stream.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 
