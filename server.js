@@ -15,7 +15,187 @@ const PORT = process.env.PORT || 3000;
 const POLL_MS = 5000;
 const INCIDENT_POLL_MS = 10000; // Fetch incidents every 10s
 const STAT_POLL_MS = 30000; // Fetch stats every 30s
-const MIME = { '.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon','.jpg':'image/jpeg','.gif':'image/gif','.woff2':'font/woff2' };
+const MIME = { '.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon','.jpg':'image/jpeg','.gif':'image/gif','.woff2':'font/woff2','.webmanifest':'application/manifest+json','.xml':'application/xml','.txt':'text/plain' };
+const SITE_URL = 'https://bongda365.xyz';
+
+// ── SEO: Bot Detection ──
+const BOT_UA = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|quora|pinterest|slackbot|vkshare|W3C_Validator|whatsapp|telegram|discord/i;
+function isBot(ua) { return BOT_UA.test(ua || ''); }
+
+// ── SEO: Generate meta HTML for bots ──
+function seoHTML(opts) {
+  const { title, desc, url, type = 'website', image } = opts;
+  const fullUrl = SITE_URL + (url || '/');
+  const ogImage = image || SITE_URL + '/og-default.png';
+  return `<!DOCTYPE html><html lang="vi"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${title}</title>
+<meta name="description" content="${desc}">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="${fullUrl}">
+<meta property="og:title" content="${title}">
+<meta property="og:description" content="${desc}">
+<meta property="og:url" content="${fullUrl}">
+<meta property="og:type" content="${type}">
+<meta property="og:image" content="${ogImage}">
+<meta property="og:site_name" content="BongDa365">
+<meta property="og:locale" content="vi_VN">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${title}">
+<meta name="twitter:description" content="${desc}">
+<meta name="twitter:image" content="${ogImage}">
+<script type="application/ld+json">${JSON.stringify(opts.jsonLd || {})}</script>
+</head><body>
+<h1>${title}</h1><p>${desc}</p>
+${opts.body || ''}
+<a href="${fullUrl}">Xem tại BongDa365</a>
+</body></html>`;
+}
+
+// ── SEO: Route-specific meta for bots ──
+function seoForPath(urlPath) {
+  // Home / Live
+  if (urlPath === '/' || urlPath === '/live') {
+    return seoHTML({
+      title: 'BongDa365 - Tỉ Số Trực Tiếp Bóng Đá | Live Score',
+      desc: 'Xem tỉ số trực tiếp bóng đá, dự đoán AI Ngựa Tiên Tri, chat live, xác suất real-time. Premier League, La Liga, Serie A, V-League và 500+ giải đấu.',
+      url: '/',
+      jsonLd: { '@context': 'https://schema.org', '@type': 'WebSite', name: 'BongDa365', url: SITE_URL, description: 'Tỉ số trực tiếp bóng đá, dự đoán AI, chat live', potentialAction: { '@type': 'SearchAction', target: SITE_URL + '/search?q={search_term_string}', 'query-input': 'required name=search_term_string' } },
+    });
+  }
+  // Schedule
+  const schedMatch = urlPath.match(/^\/schedule(?:\/(\d{4}-\d{2}-\d{2}))?$/);
+  if (schedMatch) {
+    const date = schedMatch[1] || new Date().toISOString().slice(0, 10);
+    return seoHTML({
+      title: `Lịch Thi Đấu Bóng Đá ${date} | BongDa365`,
+      desc: `Lịch thi đấu bóng đá ngày ${date}. Xem giờ đá, đội hình, dự đoán tỉ số cho tất cả các trận.`,
+      url: `/schedule/${date}`,
+    });
+  }
+  // League
+  const leagueMatch = urlPath.match(/^\/league\/(\d+)/);
+  if (leagueMatch) {
+    const leagueNames = { 17: 'Premier League', 8: 'La Liga', 23: 'Serie A', 35: 'Bundesliga', 34: 'Ligue 1', 7: 'Champions League', 679: 'Europa League', 626: 'V-League 1' };
+    const name = leagueNames[leagueMatch[1]] || `Giải đấu #${leagueMatch[1]}`;
+    return seoHTML({
+      title: `${name} - Bảng Xếp Hạng, Lịch Đấu, Kết Quả | BongDa365`,
+      desc: `Bảng xếp hạng ${name} mùa giải 2025-2026. Kết quả, lịch đấu, thống kê cầu thủ, dự đoán AI.`,
+      url: `/league/${leagueMatch[1]}`,
+      jsonLd: { '@context': 'https://schema.org', '@type': 'SportsOrganization', name, sport: 'Football' },
+    });
+  }
+  // Match
+  const matchMatch = urlPath.match(/^\/match\/(\d+)/);
+  if (matchMatch) {
+    const matchId = matchMatch[1];
+    // Try to get match data from cached live events
+    let matchTitle = `Trận đấu #${matchId}`;
+    let matchDesc = 'Xem tỉ số trực tiếp, thống kê, đội hình, dự đoán AI';
+    let matchJsonLd = {};
+    if (cachedLive) {
+      try {
+        const data = JSON.parse(cachedLive);
+        const ev = (data.events || []).find(e => e.id == matchId);
+        if (ev) {
+          const home = ev.homeTeam?.name || '?';
+          const away = ev.awayTeam?.name || '?';
+          const score = ev.homeScore?.current != null ? `${ev.homeScore.current}-${ev.awayScore.current}` : 'vs';
+          matchTitle = `${home} ${score} ${away} - Trực Tiếp | BongDa365`;
+          matchDesc = `${home} vs ${away}: tỉ số trực tiếp, thống kê, đội hình, chat live, dự đoán AI Ngựa Tiên Tri.`;
+          matchJsonLd = { '@context': 'https://schema.org', '@type': 'SportsEvent', name: `${home} vs ${away}`, homeTeam: { '@type': 'SportsTeam', name: home }, awayTeam: { '@type': 'SportsTeam', name: away }, sport: 'Football' };
+        }
+      } catch {}
+    }
+    return seoHTML({ title: matchTitle, desc: matchDesc, url: `/match/${matchId}`, jsonLd: matchJsonLd });
+  }
+  // Predictions
+  if (urlPath === '/predictions') {
+    return seoHTML({
+      title: 'Dự Đoán Bóng Đá AI - Xác Suất Real-Time | BongDa365',
+      desc: 'Dự đoán tỉ số bóng đá bằng AI Ngựa Tiên Tri. Xác suất thắng/thua/hòa, tài/xỉu, BTTS cập nhật real-time.',
+      url: '/predictions',
+    });
+  }
+  // World Cup
+  if (urlPath === '/worldcup') {
+    return seoHTML({
+      title: 'FIFA World Cup 2026 - Lịch Đấu, Bảng Đấu, Dự Đoán | BongDa365',
+      desc: 'World Cup 2026 tại USA, Mexico, Canada. 48 đội, 12 bảng, 104 trận. Xem lịch đấu, bảng xếp hạng, dự đoán nhà vô địch.',
+      url: '/worldcup',
+      jsonLd: { '@context': 'https://schema.org', '@type': 'SportsEvent', name: 'FIFA World Cup 2026', startDate: '2026-06-11', endDate: '2026-07-19', location: { '@type': 'Place', name: 'USA, Mexico, Canada' }, sport: 'Football' },
+    });
+  }
+  return null; // Not a known SEO route
+}
+
+// ── Sitemap & Robots ──
+function generateSitemap() {
+  const today = new Date().toISOString().slice(0, 10);
+  const leagues = [
+    { id: 17, name: 'premier-league' }, { id: 8, name: 'la-liga' },
+    { id: 23, name: 'serie-a' }, { id: 35, name: 'bundesliga' },
+    { id: 34, name: 'ligue-1' }, { id: 7, name: 'champions-league' },
+    { id: 679, name: 'europa-league' }, { id: 626, name: 'v-league' },
+  ];
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
+  // Home
+  xml += `<url><loc>${SITE_URL}/</loc><changefreq>always</changefreq><priority>1.0</priority><lastmod>${today}</lastmod></url>\n`;
+  xml += `<url><loc>${SITE_URL}/live</loc><changefreq>always</changefreq><priority>0.9</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/predictions</loc><changefreq>hourly</changefreq><priority>0.8</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/schedule</loc><changefreq>daily</changefreq><priority>0.8</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/worldcup</loc><changefreq>daily</changefreq><priority>0.9</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/privacy</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/terms</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n`;
+  // Leagues
+  for (const lg of leagues) {
+    xml += `<url><loc>${SITE_URL}/league/${lg.id}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>\n`;
+  }
+  // Live matches (dynamic)
+  if (cachedLive) {
+    try {
+      const data = JSON.parse(cachedLive);
+      for (const ev of (data.events || []).slice(0, 100)) {
+        xml += `<url><loc>${SITE_URL}/match/${ev.id}</loc><changefreq>always</changefreq><priority>0.7</priority></url>\n`;
+      }
+    } catch {}
+  }
+  xml += `</urlset>`;
+  return xml;
+}
+
+const ROBOTS_TXT = `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${SITE_URL}/sitemap.xml\n`;
+
+// ── Static Pages ──
+function privacyPage() {
+  return seoHTML({
+    title: 'Chính Sách Bảo Mật | BongDa365',
+    desc: 'Chính sách bảo mật của BongDa365.xyz',
+    url: '/privacy',
+    body: `<h2>Chính Sách Bảo Mật</h2>
+<p>Cập nhật lần cuối: 20/03/2026</p>
+<h3>1. Thu thập dữ liệu</h3><p>BongDa365 thu thập dữ liệu ẩn danh về việc sử dụng website bao gồm: trang được xem, thời gian truy cập, loại thiết bị. Chúng tôi không thu thập thông tin cá nhân trừ khi bạn tự nguyện cung cấp (ví dụ: đăng ký tài khoản).</p>
+<h3>2. Cookie</h3><p>Website sử dụng cookie để cải thiện trải nghiệm người dùng và phục vụ quảng cáo phù hợp. Bạn có thể tắt cookie trong cài đặt trình duyệt.</p>
+<h3>3. Quảng cáo</h3><p>Chúng tôi sử dụng các dịch vụ quảng cáo của bên thứ ba (Google AdSense). Các dịch vụ này có thể sử dụng cookie để hiển thị quảng cáo dựa trên lịch sử duyệt web.</p>
+<h3>4. Chia sẻ dữ liệu</h3><p>Chúng tôi không bán hoặc chia sẻ dữ liệu cá nhân với bên thứ ba ngoài mục đích phân tích và quảng cáo.</p>
+<h3>5. Liên hệ</h3><p>Nếu có thắc mắc, liên hệ: contact@bongda365.xyz</p>`,
+  });
+}
+
+function termsPage() {
+  return seoHTML({
+    title: 'Điều Khoản Sử Dụng | BongDa365',
+    desc: 'Điều khoản sử dụng của BongDa365.xyz',
+    url: '/terms',
+    body: `<h2>Điều Khoản Sử Dụng</h2>
+<p>Cập nhật lần cuối: 20/03/2026</p>
+<h3>1. Chấp nhận điều khoản</h3><p>Bằng việc sử dụng BongDa365, bạn đồng ý với các điều khoản dưới đây.</p>
+<h3>2. Dịch vụ</h3><p>BongDa365 cung cấp thông tin tỉ số bóng đá trực tiếp, thống kê, dự đoán AI mang tính chất giải trí. Thông tin dự đoán không phải lời khuyên cá cược.</p>
+<h3>3. Miễn trừ trách nhiệm</h3><p>Dữ liệu tỉ số và thống kê được cung cấp "nguyên trạng" và có thể có độ trễ. BongDa365 không chịu trách nhiệm cho bất kỳ quyết định nào dựa trên thông tin trên website.</p>
+<h3>4. Nội dung người dùng</h3><p>Tin nhắn chat phải tuân thủ pháp luật Việt Nam. Nội dung vi phạm sẽ bị xóa không thông báo.</p>
+<h3>5. Sở hữu trí tuệ</h3><p>Nội dung, thiết kế và mã nguồn thuộc quyền sở hữu của BongDa365. Dữ liệu bóng đá được cung cấp bởi SofaScore.</p>`,
+  });
+}
 
 // ── HTTP Server ──
 const server = http.createServer(async (req, res) => {
@@ -65,8 +245,48 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── SEO: robots.txt ──
+  if (req.url === '/robots.txt') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end(ROBOTS_TXT);
+    return;
+  }
+
+  // ── SEO: sitemap.xml ──
+  if (req.url === '/sitemap.xml') {
+    res.writeHead(200, { 'Content-Type': 'application/xml', 'Cache-Control': 'public, max-age=3600' });
+    res.end(generateSitemap());
+    return;
+  }
+
+  // ── Static pages ──
+  if (req.url === '/privacy' || req.url === '/privacy/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(privacyPage());
+    return;
+  }
+  if (req.url === '/terms' || req.url === '/terms/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(termsPage());
+    return;
+  }
+
+  // ── SEO: Bot pre-rendering ──
+  const ua = req.headers['user-agent'] || '';
+  const cleanPath = decodeURIComponent((req.url || '/').split('?')[0]);
+  if (isBot(ua) && !cleanPath.includes('.')) {
+    const seoPage = seoForPath(cleanPath);
+    if (seoPage) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(seoPage);
+      return;
+    }
+  }
+
   // Static files (with path traversal protection)
   let fp = req.url === '/' ? '/index.html' : decodeURIComponent(req.url.split('?')[0]);
+  // SPA: serve index.html for clean URLs (non-file paths)
+  if (!fp.includes('.') && !fp.startsWith('/api/')) fp = '/index.html';
   fp = path.join(__dirname, fp);
   if (!fp.startsWith(__dirname)) { res.writeHead(403); res.end('Forbidden'); return; }
   fs.readFile(fp, (err, data) => {

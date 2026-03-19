@@ -54,6 +54,7 @@ const sidebar = {
       <a href="#/" class="sidebar-link sidebar-nav" data-nav="live">🔴 Trực tiếp</a>
       <a href="#/schedule" class="sidebar-link sidebar-nav" data-nav="schedule">📅 Lịch đấu</a>
       <a href="#/predictions" class="sidebar-link sidebar-nav" data-nav="predictions">🎯 Dự đoán</a>
+      <a href="#/worldcup" class="sidebar-link sidebar-nav" data-nav="worldcup" style="color:var(--accent);font-weight:700">🏆 World Cup 2026</a>
     </div>`;
 
     // Country groups

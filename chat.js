@@ -117,7 +117,7 @@ const chat = {
   },
 
   showReaction(emoji) {
-    const container = document.getElementById('matchModal');
+    const container = document.getElementById('rightPanel') || document.getElementById('page-content');
     if (!container) return;
     const el = document.createElement('div');
     el.className = 'flying-emoji';

@@ -4,6 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BongDa365 - Tỉ Số Trực Tiếp | Dự Đoán AI | Chat Live</title>
+  <meta name="description" content="Xem tỉ số trực tiếp bóng đá, dự đoán AI Ngựa Tiên Tri, chat live, xác suất real-time. Premier League, La Liga, Serie A, V-League và 500+ giải đấu.">
+  <meta name="keywords" content="tỉ số trực tiếp, kết quả bóng đá, live score, bóng đá trực tuyến, dự đoán bóng đá, xác suất, premier league, la liga, v-league, world cup 2026">
+  <meta name="author" content="BongDa365">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://bongda365.xyz/">
+  <!-- Open Graph -->
+  <meta property="og:title" content="BongDa365 - Tỉ Số Trực Tiếp Bóng Đá">
+  <meta property="og:description" content="Tỉ số trực tiếp, dự đoán AI Ngựa Tiên Tri, chat live, xác suất real-time cho 500+ giải đấu.">
+  <meta property="og:url" content="https://bongda365.xyz/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="BongDa365">
+  <meta property="og:locale" content="vi_VN">
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="BongDa365 - Tỉ Số Trực Tiếp Bóng Đá">
+  <meta name="twitter:description" content="Tỉ số trực tiếp, dự đoán AI, chat live, xác suất real-time.">
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0a0e17">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BongDa365">
+  <!-- Structured Data -->
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"BongDa365","url":"https://bongda365.xyz","description":"Tỉ số trực tiếp bóng đá, dự đoán AI, chat live","potentialAction":{"@type":"SearchAction","target":"https://bongda365.xyz/#/search?q={search_term_string}","query-input":"required name=search_term_string"}}</script>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -29,6 +53,9 @@
     </div>
   </header>
 
+  <!-- ═══ AD: Leaderboard ═══ -->
+  <div class="ad-slot ad-leaderboard" id="adLeaderboard" data-ad-slot="leaderboard"></div>
+
   <!-- ═══ TICKER ═══ -->
   <div class="ticker-bar">
     <div class="ticker-wrapper"><div class="ticker-content" id="tickerContent"></div></div>
@@ -49,6 +76,9 @@
 
     <!-- Right Panel (for match detail unique features) -->
     <aside class="right-panel" id="rightPanel" style="display:none">
+      <button class="right-panel-toggle" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span>🐴 Ngựa Tiên Tri &bull; 💬 Chat &bull; 📈 Xác suất</span>
+      </button>
       <div class="right-panel-inner">
         <!-- AI Commentary -->
         <div class="panel-section">
@@ -60,6 +90,8 @@
           <h3 class="panel-title">📈 Xác suất</h3>
           <div id="livePredictions" class="live-predictions"></div>
         </div>
+        <!-- AD: Right Panel -->
+        <div class="ad-slot ad-rectangle" id="adRightPanel" data-ad-slot="right-panel"></div>
         <!-- Chat -->
         <div class="panel-section">
           <h3 class="panel-title">💬 Chat</h3>
@@ -105,10 +137,19 @@
         <div class="footer-col"><h4>Tính Năng</h4><ul><li>🐴 Ngựa Tiên Tri AI</li><li>💬 Chat trực tiếp</li><li>📈 Xác suất real-time</li><li>📸 Viral Cards</li></ul></div>
         <div class="footer-col"><h4>Stack</h4><ul><li>SofaScore API</li><li>Socket.io Real-time</li><li>Event Bus Architecture</li></ul></div>
       </div>
-      <div class="footer-bottom"><p>&copy; 2026 BongDa365 - 100% real data from SofaScore</p></div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 BongDa365 - 100% real data from SofaScore</p>
+        <p style="margin-top:6px;font-size:10px"><a href="/privacy" style="color:var(--text-muted)">Chính sách bảo mật</a> &bull; <a href="/terms" style="color:var(--text-muted)">Điều khoản sử dụng</a></p>
+        <p style="margin-top:4px;font-size:10px;color:var(--text-muted)">Thông tin dự đoán chỉ mang tính chất giải trí, không phải lời khuyên cá cược.</p>
+      </div>
     </div>
   </footer>
 
+  <!-- ═══ AD: Mobile Sticky Footer ═══ -->
+  <div class="ad-slot ad-sticky-footer" id="adStickyFooter" data-ad-slot="sticky-footer"></div>
+
+  <!-- Service Worker -->
+  <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}</script>
   <!-- Scripts -->
   <script src="config.js"></script>
   <script src="api.js"></script>
@@ -117,6 +158,8 @@
   <script src="sidebar.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="chat.js"></script>
+  <script src="prediction-game.js"></script>
+  <script src="worldcup.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

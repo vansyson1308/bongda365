@@ -85,7 +85,13 @@ const app = {
     router.register('/team/([^/]+)', (tid) => this.pageTeam(tid));
     router.register('/player/([^/]+)', (pid) => this.pagePlayer(pid));
     router.register('/predictions', () => this.pagePredictions());
+    router.register('/worldcup', () => this.pageWorldCup());
     router.register('/search', () => this.pageSearch());
+  },
+
+  // SEO: Update page title dynamically
+  setTitle(title) {
+    document.title = title ? `${title} | BongDa365` : 'BongDa365 - Tỉ Số Trực Tiếp | Dự Đoán AI | Chat Live';
   },
 
   // Show/hide right panel
@@ -100,6 +106,7 @@ const app = {
   //  LIVE PAGE
   // ═══════════════════════════════════════
   async pageLive() {
+    this.setTitle('Trực Tiếp Bóng Đá');
     this.showPanel(false);
     const el = document.getElementById('page-content');
     el.innerHTML = `
@@ -248,6 +255,7 @@ const app = {
   // ═══════════════════════════════════════
   async pageMatch(eid) {
     eid = parseInt(eid);
+    this.setTitle('Trận đấu trực tiếp');
     this.showPanel(true);
     const el = document.getElementById('page-content');
     el.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Đang tải trận đấu...</p></div>';
@@ -296,6 +304,21 @@ const app = {
       }
 
       el.innerHTML = this._matchPage(match, stats, incidents, lineups, odds, h2h, graph, shotmap, bestPlayers, avgPositions);
+
+      // Update title with match names
+      if (match) this.setTitle(`${match.home.name} vs ${match.away.name}`);
+
+      // Prediction game
+      if (match && typeof predGame !== 'undefined') {
+        const predSection = document.getElementById('predGameSection');
+        if (predSection) {
+          predSection.innerHTML = predGame.renderPredictionForm(eid, match.home.short, match.away.short, match.status);
+          // Auto-record result for finished matches
+          if (match.status === 'FT' && match.homeScore != null) {
+            predGame.recordResult(eid, match.homeScore, match.awayScore, `${match.home.short} vs ${match.away.short}`);
+          }
+        }
+      }
 
       // Viral card
       const viralEl = document.getElementById('viralCardSection');
@@ -358,6 +381,8 @@ const app = {
     if (graph?.graphPoints?.length) html += this._renderMomentum(graph.graphPoints, m);
     if (bestPlayers) html += this._renderBestPlayers(bestPlayers, m);
     if (avgPositions) html += this._renderAvgPositions(avgPositions, m);
+    // Prediction game section
+    html += '<div id="predGameSection"></div>';
     html += '</div>';
 
     // Stats tab
@@ -692,6 +717,7 @@ const app = {
     this.showPanel(false);
     const el = document.getElementById('page-content');
     const lg = CONFIG.LEAGUES.find(l => l.id === tid);
+    this.setTitle(lg ? lg.name : 'Giải đấu');
     const lgName = lg?.name || 'Giải đấu';
     const sid = lg?.seasonId;
 
@@ -837,6 +863,7 @@ const app = {
   //  SCHEDULE PAGE
   // ═══════════════════════════════════════
   async pageSchedule(date) {
+    this.setTitle('Lịch Thi Đấu');
     this.showPanel(false);
     const el = document.getElementById('page-content');
     if (!date) date = new Date().toISOString().split('T')[0];
@@ -881,6 +908,7 @@ const app = {
   // ═══════════════════════════════════════
   async pageTeam(teamId) {
     teamId = parseInt(teamId);
+    this.setTitle('Đội bóng');
     this.showPanel(false);
     const el = document.getElementById('page-content');
     el.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Đang tải đội bóng...</p></div>';
@@ -929,6 +957,7 @@ const app = {
   // ═══════════════════════════════════════
   async pagePlayer(playerId) {
     playerId = parseInt(playerId);
+    this.setTitle('Cầu thủ');
     this.showPanel(false);
     const el = document.getElementById('page-content');
     el.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
@@ -965,6 +994,7 @@ const app = {
   //  PREDICTIONS PAGE
   // ═══════════════════════════════════════
   async pagePredictions() {
+    this.setTitle('Dự Đoán & Phân Tích AI');
     this.showPanel(false);
     const el = document.getElementById('page-content');
     el.innerHTML = '<div class="page-header"><h2>🎯 Dự Đoán & Phân Tích</h2></div><div id="predContent"><div class="loading-state"><div class="spinner"></div><p>Đang phân tích...</p></div></div>';
@@ -1038,9 +1068,24 @@ const app = {
   },
 
   // ═══════════════════════════════════════
+  //  WORLD CUP 2026 PAGE
+  // ═══════════════════════════════════════
+  pageWorldCup() {
+    this.setTitle('World Cup 2026');
+    this.showPanel(false);
+    const el = document.getElementById('page-content');
+    if (typeof worldcup !== 'undefined') {
+      el.innerHTML = worldcup.render();
+    } else {
+      el.innerHTML = this._empty('🏆', 'World Cup 2026 - Sắp ra mắt!');
+    }
+  },
+
+  // ═══════════════════════════════════════
   //  SEARCH PAGE
   // ═══════════════════════════════════════
   async pageSearch() {
+    this.setTitle('Tìm kiếm');
     this.showPanel(false);
     const q = router.getQuery().q || '';
     const el = document.getElementById('page-content');
@@ -1116,6 +1161,13 @@ const app = {
   _frac(f) { if (!f) return '-'; const p = f.split('/'); if (p.length === 2) { const num = parseInt(p[0]), den = parseInt(p[1]); return den ? (num / den + 1).toFixed(2) : '-'; } return f; },
   _empty(icon, msg) { return `<div class="empty-state"><div class="icon">${icon}</div><p>${msg}</p></div>`; },
   _err(msg) { return `<div class="empty-state"><div class="icon">❌</div><p>${msg}</p></div>`; },
+
+  // ── Analytics: Track events (GA4 compatible) ──
+  track(event, params = {}) {
+    if (typeof gtag === 'function') {
+      gtag('event', event, params);
+    }
+  },
 };
 
 document.addEventListener('DOMContentLoaded', () => app.init());
