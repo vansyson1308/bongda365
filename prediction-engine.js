@@ -3,11 +3,15 @@
 
 const bus = require('./event-bus');
 
+let statsEngine = null;
+try { statsEngine = require('./stats-engine'); } catch {}
+
 class PredictionEngine {
   constructor() {
     this.predictions = new Map(); // matchId -> {homeWin, draw, awayWin, overGoals, btts, nextGoal, overCorners, overCards}
     this.lines = new Map(); // matchId -> {goalLine, cornerLine, cardLine}
     this.history = new Map(); // matchId -> [{ts, hp, dp, ap, event?}]
+    this.matchXG = new Map(); // matchId -> {homeXgPM, awayXgPM, leagueId}
     this.onUpdate = null;
   }
 
@@ -43,7 +47,51 @@ class PredictionEngine {
   }
 
   _initMatch(d) {
-    this.predictions.set(d.matchId, this._default());
+    const p = this._default();
+
+    // Use advanced xG stats to set better initial probabilities
+    if (statsEngine && d.home && d.away) {
+      // Extract leagueId from the event data
+      const leagueId = d._leagueId || 0;
+      if (leagueId) {
+        const homeStats = statsEngine.getTeamStats(d.home, leagueId);
+        const awayStats = statsEngine.getTeamStats(d.away, leagueId);
+
+        if (homeStats && awayStats) {
+          const hXg = homeStats.xgPerMatch || 0;
+          const aXg = awayStats.xgPerMatch || 0;
+          const hXga = homeStats.xgaPerMatch || 0;
+          const aXga = awayStats.xgaPerMatch || 0;
+
+          if (hXg > 0 && aXg > 0) {
+            // Use xG to estimate win probability (Poisson-inspired)
+            const homeAttack = (hXg + aXga) / 2; // Home's expected scoring
+            const awayAttack = (aXg + hXga) / 2; // Away's expected scoring
+            const homeAdv = 1.1; // Small home advantage factor
+
+            const hStrength = homeAttack * homeAdv;
+            const aStrength = awayAttack;
+            const totalStrength = hStrength + aStrength;
+
+            if (totalStrength > 0) {
+              p.homeWin = Math.round(Math.min(70, Math.max(15, (hStrength / totalStrength) * 80 + 5)));
+              p.awayWin = Math.round(Math.min(70, Math.max(15, (aStrength / totalStrength) * 80 + 5)));
+              p.draw = 100 - p.homeWin - p.awayWin;
+              if (p.draw < 15) { p.draw = 15; p.homeWin = Math.round((100 - 15) * p.homeWin / (p.homeWin + p.awayWin)); p.awayWin = 100 - p.homeWin - p.draw; }
+
+              // Over/Under based on xG
+              const expectedTotal = hStrength + aStrength;
+              p.overGoals = Math.round(Math.min(80, Math.max(25, expectedTotal > 2.5 ? 50 + (expectedTotal - 2.5) * 20 : 50 - (2.5 - expectedTotal) * 20)));
+
+              // Store xG context for this match
+              this.matchXG.set(d.matchId, { homeXgPM: hXg, awayXgPM: aXg, homeXga: hXga, awayXga: aXga, leagueId });
+            }
+          }
+        }
+      }
+    }
+
+    this.predictions.set(d.matchId, p);
     this._broadcast(d.matchId);
   }
 

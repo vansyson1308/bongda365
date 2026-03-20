@@ -4,6 +4,9 @@
 const bus = require('./event-bus');
 const voice = require('./mascot-voice');
 
+let statsEngine = null;
+try { statsEngine = require('./stats-engine'); } catch {}
+
 class CommentaryEngine {
   constructor() {
     this.matchNarrative = new Map(); // matchId -> narrative state
@@ -180,7 +183,6 @@ class CommentaryEngine {
 
         // Add key moments highlight
         if (summary.keyMoments.length > 0) {
-          const lastMoment = summary.keyMoments[summary.keyMoments.length - 1];
           if (total >= 3 || summary.redCards > 0) {
             summaryText += ` Sự kiện nổi bật: ${summary.keyMoments.slice(-3).join(', ')}.`;
           }
@@ -190,6 +192,21 @@ class CommentaryEngine {
           this._emit(matchId, summaryText, 'normal', 'summary');
         }
       }, 3000);
+
+      // xG-based post-match insight (delay 6s after fulltime)
+      if (statsEngine) {
+        setTimeout(() => {
+          try {
+            const ctx = this.matchContext.get(matchId);
+            const leagueId = ctx?.advancedStats?.home?.leagueId || 0;
+            if (!leagueId) return;
+            const xgLines = statsEngine.getXGCommentary(home, away, score.home, score.away, leagueId);
+            if (xgLines && xgLines.length > 0) {
+              this._emit(matchId, `📊 ${xgLines[0]}`, 'normal', 'xg_insight');
+            }
+          } catch {}
+        }, 6000);
+      }
     }
   }
 

@@ -14,6 +14,12 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000',
 ];
 
+// ── Health tracking ──
+let lastSuccessfulFetch = 0;
+let totalRequests = 0;
+let totalErrors = 0;
+let consecutiveErrors = 0;
+
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -42,12 +48,33 @@ const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Headers', '*');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
+  // Health check endpoint
+  if (req.url === '/health') {
+    const uptime = process.uptime();
+    const healthy = consecutiveErrors < 10;
+    const status = {
+      status: healthy ? 'ok' : 'degraded',
+      uptime: Math.floor(uptime),
+      lastSuccess: lastSuccessfulFetch ? new Date(lastSuccessfulFetch).toISOString() : 'never',
+      sinceLastSuccess: lastSuccessfulFetch ? Math.floor((Date.now() - lastSuccessfulFetch) / 1000) + 's' : 'n/a',
+      requests: totalRequests,
+      errors: totalErrors,
+      consecutiveErrors,
+      cacheSize: cache.size,
+    };
+    res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status, null, 2));
+    return;
+  }
+
   // Only allow /api/ paths
   if (!req.url.startsWith('/api/')) {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('BongDa365 SofaScore Proxy - OK');
     return;
   }
+
+  totalRequests++;
 
   // Check cache
   const cached = cache.get(req.url);
@@ -99,6 +126,8 @@ const server = http.createServer((req, res) => {
 
       // Cache successful responses
       if (proxyRes.statusCode === 200) {
+        lastSuccessfulFetch = Date.now();
+        consecutiveErrors = 0;
         cache.set(req.url, { body, ct, ts: Date.now() });
         // Evict old cache entries
         if (cache.size > 500) {
@@ -124,6 +153,9 @@ const server = http.createServer((req, res) => {
   });
 
   proxyReq.on('error', (e) => {
+    totalErrors++;
+    consecutiveErrors++;
+    console.log(`[PROXY ERROR] ${req.url} - ${e.message} (consecutive: ${consecutiveErrors})`);
     res.writeHead(502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: e.message }));
   });

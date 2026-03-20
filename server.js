@@ -11,6 +11,8 @@ const detector = require('./event-detector');
 const commentary = require('./commentary-engine');
 const predictions = require('./prediction-engine');
 const newsEngine = require('./news-engine');
+const statsEngine = require('./stats-engine');
+const redditEngine = require('./reddit-engine');
 
 const PORT = process.env.PORT || 3000;
 const POLL_MS = 5000;
@@ -274,9 +276,109 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Advanced Stats API
+  if (req.url.startsWith('/api/stats')) {
+    const urlObj = new URL(req.url, `http://localhost:${PORT}`);
+
+    // League stats: /api/stats/league/17
+    const leagueMatch = req.url.match(/^\/api\/stats\/league\/(\d+)$/);
+    if (leagueMatch) {
+      const data = statsEngine.getAPIData(parseInt(leagueMatch[1]));
+      res.writeHead(data ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=300' });
+      res.end(JSON.stringify(data || { error: 'League not found or stats not loaded yet' }));
+      return;
+    }
+
+    // Match analysis: /api/stats/match-analysis?home=Arsenal&away=Chelsea&league=17
+    if (req.url.startsWith('/api/stats/match-analysis')) {
+      const home = urlObj.searchParams.get('home');
+      const away = urlObj.searchParams.get('away');
+      const league = parseInt(urlObj.searchParams.get('league')) || 0;
+      const analysis = statsEngine.getMatchAnalysis(home, away, league);
+      res.writeHead(analysis ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=60' });
+      res.end(JSON.stringify(analysis || { error: 'No stats available for these teams' }));
+      return;
+    }
+
+    // Stats engine status: /api/stats/status
+    if (req.url === '/api/stats/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(statsEngine.getStatus()));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unknown stats endpoint' }));
+    return;
+  }
+
+  // Reddit Community API
+  if (req.url.startsWith('/api/reddit')) {
+    const urlObj = new URL(req.url, `http://localhost:${PORT}`);
+
+    // Trending: /api/reddit/trending?limit=10
+    if (req.url.startsWith('/api/reddit/trending')) {
+      const limit = parseInt(urlObj.searchParams.get('limit')) || 10;
+      const data = redditEngine.getTrending(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=30' });
+      res.end(JSON.stringify({ posts: data }));
+      return;
+    }
+
+    // Insider scoops: /api/reddit/insider?limit=10
+    if (req.url.startsWith('/api/reddit/insider')) {
+      const limit = parseInt(urlObj.searchParams.get('limit')) || 10;
+      const data = redditEngine.getInsiderScoops(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=30' });
+      res.end(JSON.stringify({ posts: data }));
+      return;
+    }
+
+    // Categories: /api/reddit/categories
+    if (req.url === '/api/reddit/categories') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=60' });
+      res.end(JSON.stringify({ categories: redditEngine.getCategories() }));
+      return;
+    }
+
+    // Posts list: /api/reddit?page=1&limit=20&category=transfers&sort=trending&league=premier-league
+    const page = parseInt(urlObj.searchParams.get('page')) || 1;
+    const limit = Math.min(parseInt(urlObj.searchParams.get('limit')) || 20, 50);
+    const category = urlObj.searchParams.get('category') || null;
+    const league = urlObj.searchParams.get('league') || null;
+    const sort = urlObj.searchParams.get('sort') || 'trending';
+    const result = redditEngine.getPosts({ page, limit, category, league, sort });
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=30' });
+    res.end(JSON.stringify(result));
+    return;
+  }
+
   // News API
   if (req.url.startsWith('/api/news')) {
     const urlObj = new URL(req.url, `http://localhost:${PORT}`);
+
+    // Named sub-routes FIRST (before single article regex catches them)
+    // Insider scoops: /api/news/insider
+    if (req.url.startsWith('/api/news/insider')) {
+      const limit = parseInt(urlObj.searchParams.get('limit')) || 10;
+      const data = newsEngine.getInsiderScoops(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=30' });
+      res.end(JSON.stringify({ articles: data }));
+      return;
+    }
+    // Confirmed (multi-source): /api/news/confirmed
+    if (req.url.startsWith('/api/news/confirmed')) {
+      const data = newsEngine.getConfirmed(10);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=60' });
+      res.end(JSON.stringify({ articles: data }));
+      return;
+    }
+    // Source stats: /api/news/sources
+    if (req.url === '/api/news/sources') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=60' });
+      res.end(JSON.stringify({ sources: newsEngine.getSourceStats() }));
+      return;
+    }
     // Single article: /api/news/bbc-a1b2c3
     const idMatch = req.url.match(/^\/api\/news\/([a-z0-9-]+)$/);
     if (idMatch) {
@@ -642,7 +744,7 @@ async function buildMatchContext(matchId, home, away, leagueId, seasonId) {
   } catch { /* silent */ }
 }
 
-// Listen for kickoff to build context
+// Listen for kickoff to build context + attach advanced stats
 bus.on('kickoff', d => {
   if (d.matchId && d.home && d.away) {
     // Try to extract league info from cached live data
@@ -658,6 +760,28 @@ bus.on('kickoff', d => {
       } catch {}
     }
     buildMatchContext(d.matchId, d.home, d.away, leagueId, seasonId);
+
+    // Attach advanced stats analysis at kickoff
+    if (leagueId) {
+      const analysis = statsEngine.getMatchAnalysis(d.home, d.away, leagueId);
+      if (analysis && analysis.insights.length > 0) {
+        // Send top insight as commentary
+        const topInsight = analysis.insights[0];
+        setTimeout(() => {
+          commentary.setMatchContext(d.matchId, { narrative: topInsight.vi, advancedStats: analysis });
+          // Broadcast first xG insight after kickoff
+          io.to(`match_${d.matchId}`).emit('commentary', {
+            matchId: d.matchId,
+            text: `📊 ${topInsight.vi}`,
+            priority: 'normal',
+            type: 'xg_insight',
+            ts: Date.now(),
+          });
+          // Send full analysis to match room
+          io.to(`match_${d.matchId}`).emit('match_analysis', { matchId: d.matchId, analysis });
+        }, 8000); // Delay 8s after kickoff so it doesn't overlap
+      }
+    }
   }
 });
 
@@ -678,9 +802,35 @@ const USER_AGENTS = [
 ];
 let uaIdx = 0;
 
-function fetchSofa(urlPath) {
+// Track proxy health to decide fallback strategy
+let proxyConsecutiveFailures = 0;
+const MAX_PROXY_FAILURES = 3; // After 3 consecutive failures, try direct as fallback
+
+async function fetchSofa(urlPath) {
   // If SOFA_PROXY_URL is set, route through local proxy (home IP, not blocked)
-  if (SOFA_PROXY_URL) return fetchViaProxy(urlPath);
+  if (SOFA_PROXY_URL) {
+    try {
+      const result = await fetchViaProxy(urlPath);
+      proxyConsecutiveFailures = 0; // Reset on success
+      return result;
+    } catch (e) {
+      proxyConsecutiveFailures++;
+      if (proxyConsecutiveFailures <= MAX_PROXY_FAILURES) {
+        console.log(`[WARN] Proxy failed (${proxyConsecutiveFailures}/${MAX_PROXY_FAILURES}): ${e.message} — retrying via proxy`);
+        throw e; // Let caller handle
+      }
+      // After MAX failures, try direct as emergency fallback
+      console.log(`[WARN] Proxy failed ${proxyConsecutiveFailures}x — trying direct SofaScore API as fallback`);
+      try {
+        const result = await fetchDirect(urlPath);
+        console.log(`[INFO] Direct fallback succeeded for ${urlPath}`);
+        return result;
+      } catch (e2) {
+        console.log(`[ERROR] Direct fallback also failed: ${e2.message}`);
+        throw e; // Throw original proxy error
+      }
+    }
+  }
   return fetchDirect(urlPath);
 }
 
@@ -758,7 +908,9 @@ async function pollLive() {
 
     // Push full data to all clients (no re-fetch needed)
     io.emit('live_update', { ts: Date.now(), count: events.length, events });
-  } catch (e) { /* silent */ }
+  } catch (e) {
+    console.log(`[POLL] Live fetch failed: ${e.message}`);
+  }
 }
 
 // Incident poll - cycle through live matches
@@ -894,6 +1046,10 @@ setInterval(pollStats, STAT_POLL_MS);
 setInterval(pollOdds, 60000); // Odds change slowly, 60s is enough
 pollLive();
 newsEngine.start();
+// Stats engine needs the fetchSofa function to access SofaScore API
+statsEngine.setFetchFn(fetchSofa);
+statsEngine.start();
+redditEngine.start();
 
 // ── Start ──
 server.on('error', (err) => {

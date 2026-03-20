@@ -9,10 +9,15 @@ const SOURCES = [
   { key: 'bbc', name: 'BBC Sport', url: 'https://feeds.bbci.co.uk/sport/football/rss.xml' },
   { key: 'espn', name: 'ESPN', url: 'https://www.espn.com/espn/rss/soccer/news' },
   { key: 'sky', name: 'Sky Sports', url: 'https://www.skysports.com/rss/12040' },
+  // Sprint 3: Enhanced sources — Google News for insider journalists + Guardian
+  { key: 'guardian', name: 'The Guardian', url: 'https://www.theguardian.com/football/rss' },
+  { key: 'gnews-romano', name: 'Fabrizio Romano (via GNews)', url: 'https://news.google.com/rss/search?q=%22Fabrizio+Romano%22+football&hl=en&gl=US&ceid=US:en', insider: true },
+  { key: 'gnews-ornstein', name: 'David Ornstein (via GNews)', url: 'https://news.google.com/rss/search?q=%22David+Ornstein%22+football&hl=en&gl=US&ceid=US:en', insider: true },
+  { key: 'gnews-transfers', name: 'Transfer News (via GNews)', url: 'https://news.google.com/rss/search?q=football+transfer+confirmed+2026&hl=en&gl=US&ceid=US:en' },
 ];
 
 const POLL_INTERVAL = 15 * 60 * 1000; // 15 minutes
-const MAX_ARTICLES = 200;
+const MAX_ARTICLES = 500;
 const TTL_MS = 72 * 60 * 60 * 1000; // 72 hours
 const TRANSLATE_DELAY = 2000; // 2s between translation calls
 
@@ -83,6 +88,14 @@ function fetchURL(url, timeout = 15000) {
 // ═══ RSS XML PARSER ═══
 function parseRSS(xml, source) {
   const items = [];
+
+  // Detect Atom feed (Google News uses Atom)
+  const isAtom = xml.includes('<feed') && xml.includes('xmlns="http://www.w3.org/2005/Atom"');
+
+  if (isAtom) {
+    return parseAtomFeed(xml, source);
+  }
+
   const itemRegex = /<item[\s>]([\s\S]*?)<\/item>/gi;
   let match;
 
@@ -113,9 +126,65 @@ function parseRSS(xml, source) {
       category: detectCategory(title + ' ' + summary),
       leagueTags: detectLeagues(title + ' ' + summary),
       fetchedAt: Date.now(),
+      isInsider: !!source.insider,
       // v2: full article fields (lazy-loaded)
       contentVi: null,       // string[] — Vietnamese paragraphs
       contentStatus: null,   // null | 'fetching' | 'ready' | 'failed'
+    });
+  }
+
+  return items;
+}
+
+// Parse Atom feed (Google News format)
+function parseAtomFeed(xml, source) {
+  const items = [];
+  const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
+  let match;
+
+  while ((match = entryRegex.exec(xml)) !== null) {
+    const block = match[1];
+    const rawTitle = extractTag(block, 'title') || '';
+    const title = stripHTML(decodeEntities(rawTitle));
+
+    // Atom uses <link href="..."/> (self-closing)
+    const linkMatch = block.match(/<link[^>]+href=["']([^"']+)["']/i);
+    const link = linkMatch ? linkMatch[1] : '';
+
+    const published = extractTag(block, 'published') || extractTag(block, 'updated') || '';
+    const contentBlock = extractTag(block, 'content') || extractTag(block, 'summary') || '';
+    const description = stripHTML(decodeEntities(contentBlock)).slice(0, 300);
+
+    // Google News includes the original source in the title: "Article Title - Source Name"
+    let cleanTitle = title;
+    let originalSource = '';
+    const sourceSplit = title.lastIndexOf(' - ');
+    if (sourceSplit > 20) {
+      cleanTitle = title.substring(0, sourceSplit).trim();
+      originalSource = title.substring(sourceSplit + 3).trim();
+    }
+
+    if (!cleanTitle || !link) continue;
+
+    const id = source.key + '-' + crypto.createHash('md5').update(link).digest('hex').slice(0, 10);
+
+    items.push({
+      id,
+      title: cleanTitle,
+      titleVi: null,
+      summary: description || cleanTitle,
+      summaryVi: null,
+      source: originalSource || source.name,
+      sourceKey: source.key,
+      link,
+      imageUrl: null,
+      pubDate: published ? new Date(published).getTime() : Date.now(),
+      category: detectCategory(cleanTitle + ' ' + description),
+      leagueTags: detectLeagues(cleanTitle + ' ' + description),
+      fetchedAt: Date.now(),
+      isInsider: !!source.insider,
+      contentVi: null,
+      contentStatus: null,
     });
   }
 
@@ -243,6 +312,27 @@ function extractSkyContent(html) {
   return paragraphs;
 }
 
+function extractGuardianContent(html) {
+  // Guardian uses <div class="article-body-commercial-selector"> or dcr-article
+  let contentBlock = '';
+  const bodyMatch = html.match(/<div[^>]*class="[^"]*(?:article-body|content__article-body|dcr-)[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<aside|<footer|<div[^>]*class="[^"]*(?:after-article|submeta))/i);
+  if (bodyMatch) contentBlock = bodyMatch[1];
+  else {
+    const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+    if (mainMatch) contentBlock = mainMatch[1];
+    else contentBlock = html;
+  }
+
+  const paragraphs = [];
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = pRegex.exec(contentBlock)) !== null) {
+    const text = stripHTML(decodeEntities(m[1])).trim();
+    if (text.length > 30) paragraphs.push(text);
+  }
+  return paragraphs;
+}
+
 // ── Generic fallback: works for any news site ──
 function extractGenericContent(html) {
   // 1. Strip non-content elements
@@ -288,6 +378,7 @@ async function scrapeArticleContent(url, sourceKey) {
     case 'bbc': paragraphs = extractBBCContent(html); break;
     case 'espn': paragraphs = extractESPNContent(html); break;
     case 'sky': paragraphs = extractSkyContent(html); break;
+    case 'guardian': paragraphs = extractGuardianContent(html); break;
     default: paragraphs = extractGenericContent(html);
   }
 
@@ -491,7 +582,9 @@ async function fetchSource(source) {
 
     for (const item of items) {
       if (articles.has(item.id)) continue;
-      if (isDuplicate(item.title)) continue;
+      if (isDuplicate(item.title, item.sourceKey)) continue;
+      item.confidence = 'low'; // Default: single source
+      item.crossRefs = [];
       articles.set(item.id, item);
       translateQueue.push(item.id);
       newCount++;
@@ -507,12 +600,26 @@ async function fetchSource(source) {
   }
 }
 
-function isDuplicate(title) {
+function isDuplicate(title, newSource) {
   const normalized = title.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
   for (const [, existing] of articles) {
     const existNorm = existing.title.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-    if (existNorm === normalized) return true;
-    if (normalized.slice(0, 40) === existNorm.slice(0, 40) && normalized.length > 20) return true;
+    const isMatch = existNorm === normalized ||
+      (normalized.slice(0, 40) === existNorm.slice(0, 40) && normalized.length > 20);
+
+    if (isMatch) {
+      // Cross-reference: same story from different source increases confidence
+      if (newSource && newSource !== existing.sourceKey) {
+        if (!existing.crossRefs) existing.crossRefs = [];
+        if (!existing.crossRefs.includes(newSource)) {
+          existing.crossRefs.push(newSource);
+        }
+        // Confidence: 1 source = 'low', 2 = 'medium', 3+ = 'high'
+        const totalSources = 1 + existing.crossRefs.length;
+        existing.confidence = totalSources >= 3 ? 'high' : totalSources >= 2 ? 'medium' : 'low';
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -565,6 +672,33 @@ function getLatest(n = 5) {
     .slice(0, n);
 }
 
+// Get insider scoops (from Romano, Ornstein sources)
+function getInsiderScoops(n = 10) {
+  return [...articles.values()]
+    .filter(a => a.isInsider && a.titleVi)
+    .sort((a, b) => b.pubDate - a.pubDate)
+    .slice(0, n);
+}
+
+// Get high-confidence articles (confirmed by multiple sources)
+function getConfirmed(n = 10) {
+  return [...articles.values()]
+    .filter(a => a.confidence === 'high' && a.titleVi)
+    .sort((a, b) => b.pubDate - a.pubDate)
+    .slice(0, n);
+}
+
+// Get sources breakdown
+function getSourceStats() {
+  const stats = {};
+  for (const [, article] of articles) {
+    const key = article.sourceKey;
+    if (!stats[key]) stats[key] = { source: article.source, key, count: 0 };
+    stats[key].count++;
+  }
+  return Object.values(stats).sort((a, b) => b.count - a.count);
+}
+
 // ═══ START POLLING ═══
 async function start() {
   console.log('[News] Starting news engine...');
@@ -582,4 +716,4 @@ async function start() {
   });
 }
 
-module.exports = { start, getArticles, getArticle, getFullArticle, getCount, getLatest, CATEGORY_VI };
+module.exports = { start, getArticles, getArticle, getFullArticle, getCount, getLatest, getInsiderScoops, getConfirmed, getSourceStats, CATEGORY_VI };

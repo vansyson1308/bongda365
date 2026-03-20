@@ -59,6 +59,79 @@ class SofaAPI {
   async getRounds(tid, sid)    { return this.get(`/unique-tournament/${tid}/season/${sid}/rounds`); }
   async search(q)              { return this.get(`/search/all?q=${encodeURIComponent(q)}&page=0`); }
 
+  // ── Advanced Stats (FBref + Understat) ──
+  async getAdvancedStats(leagueId) {
+    const url = `/api/stats/league/${leagueId}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 300000) return c.data; // 5min cache
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
+  // ── Reddit Community ──
+  async getRedditTrending(limit = 10) {
+    const url = `/api/reddit/trending?limit=${limit}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 30000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
+  async getRedditPosts(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.page) params.set('page', opts.page);
+    if (opts.category) params.set('category', opts.category);
+    if (opts.league) params.set('league', opts.league);
+    if (opts.sort) params.set('sort', opts.sort);
+    const url = `/api/reddit?${params.toString()}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 30000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
+  async getRedditInsider(limit = 10) {
+    const url = `/api/reddit/insider?limit=${limit}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 30000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
+  async getRedditCategories() {
+    const url = '/api/reddit/categories';
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 60000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
+  async getMatchAnalysis(home, away, leagueId) {
+    const url = `/api/stats/match-analysis?home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}&league=${leagueId}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 60000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
   // ── Mappers ──
   mapEvent(e) {
     const st = e.status || {};

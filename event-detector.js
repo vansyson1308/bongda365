@@ -27,15 +27,16 @@ class EventDetector {
       const homeId = e.homeTeam?.id;
       const awayId = e.awayTeam?.id;
       const league = e.tournament?.uniqueTournament?.name || e.tournament?.name || '';
+      const leagueId = e.tournament?.uniqueTournament?.id || 0;
       const minute = this._calcMinute(e);
 
-      const snap = { hs, as, status, desc, home, away, homeId, awayId, league, minute };
+      const snap = { hs, as, status, desc, home, away, homeId, awayId, league, leagueId, minute };
       const old = this.prev.get(id);
 
       if (!old) {
         // New match appeared
         if (status === 'inprogress') {
-          bus.fire('kickoff', { matchId: id, home, away, homeId, awayId, league, minute });
+          bus.fire('kickoff', { matchId: id, home, away, homeId, awayId, league, _leagueId: leagueId, minute });
         }
         this.prev.set(id, snap);
         continue;
