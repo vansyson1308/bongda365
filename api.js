@@ -118,7 +118,9 @@ class SofaAPI {
   async getNewsArticle(id) {
     const url = `/api/news/${id}`;
     const c = this.cache.get(url);
-    if (c && Date.now() - c.ts < 60000) return c.data;
+    // Short cache (3s) for articles still loading, longer (5min) for ready articles
+    const ttl = (c && c.data && c.data.article && c.data.article.contentStatus === 'ready') ? 300000 : 3000;
+    if (c && Date.now() - c.ts < ttl) return c.data;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${res.status}`);
     const json = await res.json();

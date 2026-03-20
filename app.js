@@ -1347,7 +1347,7 @@ const app = {
   async pageNewsDetail(id) {
     this.showPanel(false);
     const el = document.getElementById('page-content');
-    el.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+    el.innerHTML = '<div class="loading-state"><div class="spinner"></div><p style="color:var(--text-muted);margin-top:12px">Đang tải bài viết...</p></div>';
 
     try {
       const data = await api.getNewsArticle(id);
@@ -1359,6 +1359,20 @@ const app = {
       const pubDate = new Date(a.pubDate).toLocaleDateString('vi-VN', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const leagueTags = (a.leagueTags || []).map(t => `<span class="news-league-tag">${t.replace(/-/g, ' ')}</span>`).join('');
 
+      // Render full article content or fallback to summary
+      let contentHTML = '';
+      if (a.contentVi && a.contentVi.length > 0 && a.contentStatus === 'ready') {
+        contentHTML = `<div class="news-detail-content">${a.contentVi.map(p => `<p>${p}</p>`).join('')}</div>`;
+      } else if (a.contentStatus === 'fetching') {
+        contentHTML = `<div class="news-detail-content">
+          <p class="news-detail-summary">${a.summaryVi || a.summary}</p>
+          <div class="news-loading-content"><div class="spinner"></div> Đang tải nội dung đầy đủ...</div>
+        </div>`;
+      } else {
+        // failed or no content — show summary as fallback
+        contentHTML = `<div class="news-detail-content"><p class="news-detail-summary">${a.summaryVi || a.summary}</p></div>`;
+      }
+
       el.innerHTML = `
         <div class="news-detail">
           <a href="#/news" class="news-back">&larr; Tất cả tin tức</a>
@@ -1369,16 +1383,47 @@ const app = {
             <span class="news-time">${pubDate}</span>
           </div>
           ${a.imageUrl ? `<img src="${a.imageUrl}" class="news-detail-img" loading="lazy" onerror="this.style.display='none'" alt="${a.titleVi || a.title}">` : ''}
-          <p class="news-detail-summary">${a.summaryVi || a.summary}</p>
+          ${contentHTML}
           ${leagueTags ? `<div class="news-league-tags">${leagueTags}</div>` : ''}
-          <a href="${a.link}" target="_blank" rel="noopener noreferrer" class="news-read-original">Đọc bài gốc tại ${a.source} &rarr;</a>
+          <div class="news-source-attr">Nguồn: ${a.source}</div>
         </div>
         <div class="news-related" id="newsRelated"></div>`;
 
-      // Load related articles
+      // If content was still fetching, poll for completion
+      if (a.contentStatus === 'fetching') {
+        this._pollArticleContent(id, el);
+      }
+
       this._loadRelatedNews(a);
     } catch (e) {
       el.innerHTML = this._err('Lỗi tải bài viết');
+    }
+  },
+
+  async _pollArticleContent(id, container) {
+    // Poll every 3s until content is ready (max 40s)
+    for (let i = 0; i < 13; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      // Check if user navigated away
+      if (!container.querySelector('.news-detail')) return;
+      try {
+        const data = await fetch(`/api/news/${id}`).then(r => r.json());
+        const a = data.article;
+        if (a && a.contentStatus === 'ready' && a.contentVi && a.contentVi.length > 0) {
+          const contentEl = container.querySelector('.news-detail-content');
+          if (contentEl) {
+            contentEl.innerHTML = a.contentVi.map(p => `<p>${p}</p>`).join('');
+          }
+          return;
+        }
+        if (a && a.contentStatus === 'failed') {
+          const contentEl = container.querySelector('.news-detail-content');
+          if (contentEl) {
+            contentEl.innerHTML = `<p class="news-detail-summary">${a.summaryVi || a.summary}</p>`;
+          }
+          return;
+        }
+      } catch {}
     }
   },
 

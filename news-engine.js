@@ -1,4 +1,5 @@
 // BongDa365 — News Engine: RSS fetch → parse → translate → cache
+// v2: Full article scraping + chunked translation for complete Vietnamese articles
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
@@ -46,6 +47,7 @@ const LEAGUE_KEYWORDS = {
 const articles = new Map(); // id -> article
 let translateQueue = [];
 let translating = false;
+const pendingFullFetch = new Map(); // id -> Promise (dedup concurrent requests)
 
 // ═══ HTTP FETCH ═══
 function fetchURL(url, timeout = 15000) {
@@ -60,7 +62,13 @@ function fetchURL(url, timeout = 15000) {
       timeout,
     }, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchURL(res.headers.location, timeout).then(resolve).catch(reject);
+        const loc = res.headers.location;
+        const fullLoc = loc.startsWith('http') ? loc : new URL(loc, url).href;
+        return fetchURL(fullLoc, timeout).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}`));
       }
       const chunks = [];
       res.on('data', c => chunks.push(c));
@@ -105,6 +113,9 @@ function parseRSS(xml, source) {
       category: detectCategory(title + ' ' + summary),
       leagueTags: detectLeagues(title + ' ' + summary),
       fetchedAt: Date.now(),
+      // v2: full article fields (lazy-loaded)
+      contentVi: null,       // string[] — Vietnamese paragraphs
+      contentStatus: null,   // null | 'fetching' | 'ready' | 'failed'
     });
   }
 
@@ -112,42 +123,27 @@ function parseRSS(xml, source) {
 }
 
 function extractTag(block, tag) {
-  // Handle CDATA: <title><![CDATA[...]]></title>
   const cdataRe = new RegExp(`<${tag}[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*<\\/${tag}>`, 'i');
   const cdataMatch = block.match(cdataRe);
   if (cdataMatch) return cdataMatch[1].trim();
-
-  // Plain text
   const plainRe = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
   const plainMatch = block.match(plainRe);
   return plainMatch ? plainMatch[1].trim() : null;
 }
 
-function extractGuid(block) {
-  return extractTag(block, 'guid');
-}
+function extractGuid(block) { return extractTag(block, 'guid'); }
 
 function extractImage(block) {
-  // <media:thumbnail url="..."/>
   const mediaThumbnail = block.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i);
   if (mediaThumbnail) return mediaThumbnail[1];
-
-  // <media:content url="..." medium="image"/>
   const mediaContent = block.match(/<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i);
   if (mediaContent) return mediaContent[1];
-
-  // <media:content url="..."/> (without medium)
   const mediaAny = block.match(/<media:content[^>]+url=["']([^"']+)["']/i);
   if (mediaAny) return mediaAny[1];
-
-  // <enclosure url="..." type="image/..."/>
   const enclosure = block.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]*type=["']image\//i);
   if (enclosure) return enclosure[1];
-
-  // <image><url>...</url></image>
   const imgUrl = block.match(/<image>[\s\S]*?<url>([^<]+)<\/url>/i);
   if (imgUrl) return imgUrl[1];
-
   return null;
 }
 
@@ -157,11 +153,8 @@ function stripHTML(html) {
 
 function decodeEntities(text) {
   return text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)))
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)));
 }
@@ -180,6 +173,254 @@ function detectLeagues(text) {
     if (pattern.test(text)) tags.push(league);
   }
   return tags;
+}
+
+// ═══════════════════════════════════════════════════════
+//  FULL ARTICLE SCRAPING (v2)
+// ═══════════════════════════════════════════════════════
+
+// ── Source-specific content extractors ──
+
+function extractBBCContent(html) {
+  // BBC uses <article> with text blocks containing <p>
+  // Also try data-component="text-block" pattern
+  let articleBlock = '';
+  const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  if (articleMatch) articleBlock = articleMatch[1];
+  else articleBlock = html; // fallback to full page
+
+  // Extract paragraphs from text-block components or direct <p> in article
+  const paragraphs = [];
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = pRegex.exec(articleBlock)) !== null) {
+    const text = stripHTML(decodeEntities(m[1])).trim();
+    if (text.length > 30) paragraphs.push(text);
+  }
+  return paragraphs;
+}
+
+function extractESPNContent(html) {
+  // ESPN: article-body, story-body, or article__body
+  let contentBlock = '';
+  const bodyMatch = html.match(/<div[^>]*class="[^"]*(?:article-body|story-body|article__body|ArticleBody)[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<div[^>]*class="[^"]*(?:article-footer|story-footer))/i);
+  if (bodyMatch) contentBlock = bodyMatch[1];
+  else {
+    // Try broader: find main content area
+    const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+    if (mainMatch) contentBlock = mainMatch[1];
+    else contentBlock = html;
+  }
+
+  const paragraphs = [];
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = pRegex.exec(contentBlock)) !== null) {
+    const text = stripHTML(decodeEntities(m[1])).trim();
+    if (text.length > 30) paragraphs.push(text);
+  }
+  return paragraphs;
+}
+
+function extractSkyContent(html) {
+  // Sky Sports: sdc-article-body or article__body
+  let contentBlock = '';
+  const bodyMatch = html.match(/<div[^>]*class="[^"]*(?:sdc-article-body|article__body|sdc-article-main)[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i);
+  if (bodyMatch) contentBlock = bodyMatch[1];
+  else {
+    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+    if (articleMatch) contentBlock = articleMatch[1];
+    else contentBlock = html;
+  }
+
+  const paragraphs = [];
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = pRegex.exec(contentBlock)) !== null) {
+    const text = stripHTML(decodeEntities(m[1])).trim();
+    if (text.length > 30) paragraphs.push(text);
+  }
+  return paragraphs;
+}
+
+// ── Generic fallback: works for any news site ──
+function extractGenericContent(html) {
+  // 1. Strip non-content elements
+  let clean = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+    .replace(/<form[\s\S]*?<\/form>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+
+  // 2. Extract ALL <p> tags
+  const allParagraphs = [];
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = pRegex.exec(clean)) !== null) {
+    const text = stripHTML(decodeEntities(m[1])).trim();
+    if (text.length > 40) allParagraphs.push(text);
+  }
+
+  if (allParagraphs.length === 0) return [];
+
+  // 3. Find the largest cluster of consecutive paragraphs (heuristic for article body)
+  // Score paragraphs: longer = more likely content, short = navigation/footer
+  const scored = allParagraphs.filter(p => {
+    // Filter out common non-content patterns
+    if (/^(share|tweet|email|print|subscribe|follow|sign up|copyright|all rights|terms|privacy|cookie)/i.test(p)) return false;
+    if (/^(advertisement|sponsored|promoted|related|more from|read more|see also|click here)/i.test(p)) return false;
+    return true;
+  });
+
+  return scored.length >= 2 ? scored : allParagraphs;
+}
+
+// ── Main scrape function ──
+async function scrapeArticleContent(url, sourceKey) {
+  const html = await fetchURL(url, 20000);
+
+  let paragraphs = [];
+  switch (sourceKey) {
+    case 'bbc': paragraphs = extractBBCContent(html); break;
+    case 'espn': paragraphs = extractESPNContent(html); break;
+    case 'sky': paragraphs = extractSkyContent(html); break;
+    default: paragraphs = extractGenericContent(html);
+  }
+
+  // If source-specific extractor got too few results, try generic
+  if (paragraphs.length < 3) {
+    const generic = extractGenericContent(html);
+    if (generic.length > paragraphs.length) paragraphs = generic;
+  }
+
+  // Cap at 30 paragraphs to avoid extremely long articles
+  return paragraphs.slice(0, 30);
+}
+
+// ═══════════════════════════════════════════════════════
+//  CHUNKED TRANSLATION (v2)
+// ═══════════════════════════════════════════════════════
+
+async function translateParagraphs(paragraphs) {
+  if (!paragraphs || paragraphs.length === 0) return [];
+
+  const CHUNK_LIMIT = 900; // chars per chunk (leave margin under 1000)
+  const SEPARATOR = ' ||| ';
+  const result = [];
+
+  // Group paragraphs into chunks
+  const chunks = [];
+  let currentChunk = [];
+  let currentLen = 0;
+
+  for (const p of paragraphs) {
+    const pLen = p.length + SEPARATOR.length;
+    if (currentLen + pLen > CHUNK_LIMIT && currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentLen = 0;
+    }
+    // Single paragraph too long? Split it
+    if (p.length > CHUNK_LIMIT) {
+      if (currentChunk.length > 0) { chunks.push(currentChunk); currentChunk = []; currentLen = 0; }
+      // Break long paragraph into ~800 char pieces at sentence boundaries
+      const sentences = p.match(/[^.!?]+[.!?]+\s*/g) || [p];
+      let piece = '';
+      for (const s of sentences) {
+        if (piece.length + s.length > 800 && piece.length > 0) {
+          chunks.push([piece.trim()]);
+          piece = '';
+        }
+        piece += s;
+      }
+      if (piece.trim()) chunks.push([piece.trim()]);
+      continue;
+    }
+    currentChunk.push(p);
+    currentLen += pLen;
+  }
+  if (currentChunk.length > 0) chunks.push(currentChunk);
+
+  // Translate each chunk
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const combined = chunk.join(SEPARATOR);
+
+    try {
+      const translated = await translateText(combined);
+      const parts = translated.split(/\s*\|\|\|\s*/);
+      // Map translated parts back to paragraphs
+      for (let j = 0; j < chunk.length; j++) {
+        result.push((parts[j] || chunk[j]).trim());
+      }
+    } catch (e) {
+      // Fallback: keep English for this chunk
+      console.log(`[News] Chunk translation failed (${i+1}/${chunks.length}): ${e.message}`);
+      for (const p of chunk) result.push(p);
+    }
+
+    // Rate limit between chunks
+    if (i < chunks.length - 1) {
+      await new Promise(r => setTimeout(r, TRANSLATE_DELAY));
+    }
+  }
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════
+//  LAZY FULL ARTICLE FETCH (v2)
+// ═══════════════════════════════════════════════════════
+
+async function getFullArticle(id) {
+  const article = articles.get(id);
+  if (!article) return null;
+
+  // Already has full content
+  if (article.contentStatus === 'ready') return article;
+
+  // Already being fetched — wait for the same promise (dedup)
+  if (pendingFullFetch.has(id)) {
+    await pendingFullFetch.get(id);
+    return articles.get(id);
+  }
+
+  // Start fetching full content
+  const fetchPromise = (async () => {
+    article.contentStatus = 'fetching';
+    try {
+      console.log(`[News] Scraping full article: ${article.title.slice(0, 60)}...`);
+      const paragraphs = await scrapeArticleContent(article.link, article.sourceKey);
+
+      if (paragraphs.length < 2) {
+        // Too little content scraped — mark as failed, use summary
+        article.contentStatus = 'failed';
+        article.contentVi = [article.summaryVi || article.summary];
+        console.log(`[News] Scrape got too few paragraphs (${paragraphs.length}), using summary`);
+        return;
+      }
+
+      console.log(`[News] Translating ${paragraphs.length} paragraphs (${paragraphs.join('').length} chars)...`);
+      const translated = await translateParagraphs(paragraphs);
+      article.contentVi = translated;
+      article.contentStatus = 'ready';
+      console.log(`[News] Full article ready: ${article.id}`);
+    } catch (e) {
+      article.contentStatus = 'failed';
+      article.contentVi = [article.summaryVi || article.summary];
+      console.log(`[News] Full article fetch failed for ${article.id}: ${e.message}`);
+    }
+  })();
+
+  pendingFullFetch.set(id, fetchPromise);
+  await fetchPromise;
+  pendingFullFetch.delete(id);
+
+  return articles.get(id);
 }
 
 // ═══ TRANSLATION (Google Translate unofficial) ═══
@@ -221,23 +462,20 @@ async function processTranslateQueue() {
   while (translateQueue.length > 0) {
     const articleId = translateQueue.shift();
     const article = articles.get(articleId);
-    if (!article || article.titleVi) continue; // already translated or deleted
+    if (!article || article.titleVi) continue;
 
     try {
-      // Combine title + summary with separator for single API call
       const combined = article.title + ' ||| ' + article.summary;
       const translated = await translateText(combined);
       const parts = translated.split(' ||| ');
       article.titleVi = parts[0] || article.title;
       article.summaryVi = (parts[1] || article.summary).trim();
     } catch (e) {
-      // Fallback: keep English with prefix
       article.titleVi = '[EN] ' + article.title;
       article.summaryVi = '[EN] ' + article.summary;
       console.log(`[News] Translation failed for ${articleId}: ${e.message}`);
     }
 
-    // Rate limit
     await new Promise(r => setTimeout(r, TRANSLATE_DELAY));
   }
 
@@ -252,10 +490,8 @@ async function fetchSource(source) {
     let newCount = 0;
 
     for (const item of items) {
-      if (articles.has(item.id)) continue; // skip duplicates
-      // Check title similarity to avoid near-duplicate from different sources
+      if (articles.has(item.id)) continue;
       if (isDuplicate(item.title)) continue;
-
       articles.set(item.id, item);
       translateQueue.push(item.id);
       newCount++;
@@ -265,7 +501,6 @@ async function fetchSource(source) {
       console.log(`[News] ${source.name}: +${newCount} new articles (total: ${articles.size})`);
     }
 
-    // Trigger translation
     processTranslateQueue();
   } catch (e) {
     console.log(`[News] Failed to fetch ${source.name}: ${e.message}`);
@@ -277,7 +512,6 @@ function isDuplicate(title) {
   for (const [, existing] of articles) {
     const existNorm = existing.title.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
     if (existNorm === normalized) return true;
-    // Simple similarity: first 40 chars match
     if (normalized.slice(0, 40) === existNorm.slice(0, 40) && normalized.length > 20) return true;
   }
   return false;
@@ -294,7 +528,6 @@ function evictOld() {
     }
   }
 
-  // Cap at MAX_ARTICLES: remove oldest first
   if (articles.size > MAX_ARTICLES) {
     const sorted = [...articles.entries()].sort((a, b) => a[1].pubDate - b[1].pubDate);
     const toRemove = sorted.slice(0, articles.size - MAX_ARTICLES);
@@ -310,35 +543,20 @@ function evictOld() {
 // ═══ PUBLIC API ═══
 function getArticles(opts = {}) {
   const { page = 1, limit = 20, category = null } = opts;
-
   let list = [...articles.values()]
-    .filter(a => a.titleVi) // only show translated articles
+    .filter(a => a.titleVi)
     .sort((a, b) => b.pubDate - a.pubDate);
-
   if (category && category !== 'all') {
     list = list.filter(a => a.category === category);
   }
-
   const total = list.length;
   const pages = Math.ceil(total / limit);
   const start = (page - 1) * limit;
-  const pageArticles = list.slice(start, start + limit);
-
-  return {
-    articles: pageArticles,
-    total,
-    page,
-    pages,
-  };
+  return { articles: list.slice(start, start + limit), total, page, pages };
 }
 
-function getArticle(id) {
-  return articles.get(id) || null;
-}
-
-function getCount() {
-  return articles.size;
-}
+function getArticle(id) { return articles.get(id) || null; }
+function getCount() { return articles.size; }
 
 function getLatest(n = 5) {
   return [...articles.values()]
@@ -350,25 +568,18 @@ function getLatest(n = 5) {
 // ═══ START POLLING ═══
 async function start() {
   console.log('[News] Starting news engine...');
-
-  // Fetch all sources immediately on startup (sequential with small gap)
   for (let i = 0; i < SOURCES.length; i++) {
     await fetchSource(SOURCES[i]);
     if (i < SOURCES.length - 1) await new Promise(r => setTimeout(r, 2000));
   }
-
   console.log(`[News] Initial fetch complete. ${articles.size} articles loaded.`);
 
-  // Stagger polling: each source at different offset
   SOURCES.forEach((source, i) => {
-    const offset = i * 5 * 60 * 1000; // 0, 5min, 10min offset
+    const offset = i * 5 * 60 * 1000;
     setTimeout(() => {
-      setInterval(() => {
-        fetchSource(source);
-        evictOld();
-      }, POLL_INTERVAL);
+      setInterval(() => { fetchSource(source); evictOld(); }, POLL_INTERVAL);
     }, offset);
   });
 }
 
-module.exports = { start, getArticles, getArticle, getCount, getLatest, CATEGORY_VI };
+module.exports = { start, getArticles, getArticle, getFullArticle, getCount, getLatest, CATEGORY_VI };

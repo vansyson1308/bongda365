@@ -148,12 +148,20 @@ function seoForPath(urlPath) {
   if (newsMatch) {
     const article = newsEngine.getArticle(newsMatch[1]);
     if (article) {
+      // Include full content if available for SEO
+      const bodyParagraphs = (article.contentVi && article.contentVi.length > 0)
+        ? article.contentVi.map(p => `<p>${p}</p>`).join('')
+        : `<p>${article.summaryVi || article.summary}</p>`;
+      const articleBody = (article.contentVi && article.contentVi.length > 0)
+        ? article.contentVi.join(' ')
+        : (article.summaryVi || article.summary);
       return seoHTML({
         title: `${article.titleVi || article.title} | BongDa365`,
         desc: article.summaryVi || article.summary,
         url: `/news/${article.id}`,
         image: article.imageUrl,
-        jsonLd: { '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.titleVi || article.title, description: article.summaryVi || article.summary, image: article.imageUrl || '', datePublished: new Date(article.pubDate).toISOString(), publisher: { '@type': 'Organization', name: 'BongDa365' }, mainEntityOfPage: `${SITE_URL}/news/${article.id}` },
+        body: bodyParagraphs + `<p class="news-source">Nguồn: ${article.source}</p>`,
+        jsonLd: { '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.titleVi || article.title, description: article.summaryVi || article.summary, articleBody, image: article.imageUrl || '', datePublished: new Date(article.pubDate).toISOString(), publisher: { '@type': 'Organization', name: 'BongDa365' }, mainEntityOfPage: `${SITE_URL}/news/${article.id}` },
       });
     }
   }
@@ -272,9 +280,26 @@ const server = http.createServer(async (req, res) => {
     // Single article: /api/news/bbc-a1b2c3
     const idMatch = req.url.match(/^\/api\/news\/([a-z0-9-]+)$/);
     if (idMatch) {
-      const article = newsEngine.getArticle(idMatch[1]);
-      res.writeHead(article ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(article ? { article } : { error: 'not found' }));
+      // Lazy-load full article content (scrape + translate on demand)
+      try {
+        const article = await Promise.race([
+          newsEngine.getFullArticle(idMatch[1]),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 35000))
+        ]);
+        if (!article) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'not found' }));
+          return;
+        }
+        const cacheTime = article.contentStatus === 'ready' ? 'public, max-age=300' : 'no-cache';
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cacheTime });
+        res.end(JSON.stringify({ article }));
+      } catch (e) {
+        // Timeout or error — return article with summary fallback
+        const article = newsEngine.getArticle(idMatch[1]);
+        res.writeHead(article ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(article ? { article } : { error: 'not found' }));
+      }
       return;
     }
     // List: /api/news?page=1&limit=20&category=transfers
