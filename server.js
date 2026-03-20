@@ -14,6 +14,11 @@ const newsEngine = require('./news-engine');
 
 const PORT = process.env.PORT || 3000;
 const POLL_MS = 5000;
+
+// ── Image cache: serve team/league logos from memory (instant response) ──
+const imgCache = new Map();
+// 1x1 transparent PNG (68 bytes) — fallback for missing/broken images
+const TRANSPARENT_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg==', 'base64');
 const INCIDENT_POLL_MS = 10000; // Fetch incidents every 10s
 const STAT_POLL_MS = 30000; // Fetch stats every 30s
 const MIME = { '.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon','.jpg':'image/jpeg','.gif':'image/gif','.woff2':'font/woff2','.webmanifest':'application/manifest+json','.xml':'application/xml','.txt':'text/plain' };
@@ -282,16 +287,67 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Proxy API
+  // Proxy API — with in-memory image cache
   if (req.url.startsWith('/api/')) {
+    const isImg = req.url.includes('/image');
+    // Serve cached images instantly (avoid re-proxying)
+    if (isImg && imgCache.has(req.url)) {
+      const cached = imgCache.get(req.url);
+      // Pending = another request is already fetching this image
+      if (cached.pending) {
+        cached.pending.push(res);
+        return;
+      }
+      if (cached.status === 404) {
+        res.writeHead(200, { 'Content-Type':'image/png', 'Cache-Control':'public, max-age=86400', 'Access-Control-Allow-Origin':'*' });
+        res.end(TRANSPARENT_1PX);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': cached.ct, 'Cache-Control':'public, max-age=86400', 'Access-Control-Allow-Origin':'*' });
+      res.end(cached.body);
+      return;
+    }
+    if (isImg) {
+      // Mark as pending to prevent parallel fetches for same image
+      imgCache.set(req.url, { pending: [] });
+    }
     try {
       const result = await fetchSofa(req.url);
       if (!result) { res.writeHead(304); res.end(); return; }
-      const isImg = req.url.includes('/image');
       const ct = result.headers['content-type'] || (isImg ? 'image/png' : 'application/json');
-      res.writeHead(result.status, { 'Content-Type':ct, 'Access-Control-Allow-Origin':'*', 'Cache-Control':isImg?'public, max-age=86400':'public, max-age=10' });
+      // Cache images in memory (24h effective, evicted when server restarts)
+      if (isImg) {
+        const pending = imgCache.get(req.url)?.pending || [];
+        if (result.status !== 200) {
+          imgCache.set(req.url, { status: 404 });
+          const h = { 'Content-Type':'image/png', 'Cache-Control':'public, max-age=86400', 'Access-Control-Allow-Origin':'*' };
+          res.writeHead(200, h); res.end(TRANSPARENT_1PX);
+          pending.forEach(r => { try { r.writeHead(200, h); r.end(TRANSPARENT_1PX); } catch {} });
+          return;
+        }
+        imgCache.set(req.url, { body: result.body, ct });
+        const h = { 'Content-Type': ct, 'Cache-Control':'public, max-age=86400', 'Access-Control-Allow-Origin':'*' };
+        res.writeHead(200, h); res.end(result.body);
+        pending.forEach(r => { try { r.writeHead(200, h); r.end(result.body); } catch {} });
+        // Evict old entries if cache grows too large (max 500 images ~25MB)
+        if (imgCache.size > 500) {
+          const first = imgCache.keys().next().value;
+          imgCache.delete(first);
+        }
+        return;
+      }
+      res.writeHead(result.status, { 'Content-Type':ct, 'Access-Control-Allow-Origin':'*', 'Cache-Control':'public, max-age=10' });
       res.end(result.body);
     } catch (e) {
+      // For images, return transparent pixel on error instead of 502
+      if (isImg) {
+        const pending = imgCache.get(req.url)?.pending || [];
+        imgCache.set(req.url, { status: 404 });
+        const h = { 'Content-Type':'image/png', 'Cache-Control':'public, max-age=300', 'Access-Control-Allow-Origin':'*' };
+        res.writeHead(200, h); res.end(TRANSPARENT_1PX);
+        pending.forEach(r => { try { r.writeHead(200, h); r.end(TRANSPARENT_1PX); } catch {} });
+        return;
+      }
       res.writeHead(502, { 'Content-Type':'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: e.message }));
     }

@@ -27,7 +27,7 @@ const app = {
     if (nav) {
       nav.innerHTML = CONFIG.LEAGUES.map(lg =>
         `<a href="#/league/${lg.id}" class="league-quicklink">
-          <img src="${api.tournImg(lg.id)}" onerror="this.style.display='none'" style="height:16px;width:16px;vertical-align:middle">
+          <img src="${api.tournImg(lg.id)}" loading="lazy" onerror="this.style.display='none'" style="height:16px;width:16px;vertical-align:middle">
           <span>${lg.name.replace('League','').replace('Champions ','CL ').trim()}</span>
         </a>`
       ).join('');
@@ -50,9 +50,9 @@ const app = {
           if (!results.length) { dropdown.style.display = 'none'; return; }
           dropdown.innerHTML = results.map(r => {
             if (r.team) return `<a class="search-result" href="#/team/${r.team.id}" onclick="document.getElementById('searchDropdown').style.display='none'">
-              <img src="${api.teamImg(r.team.id)}" onerror="this.style.display='none'"><span>${r.team.name}</span><small>Đội</small></a>`;
+              <img src="${api.teamImg(r.team.id)}" loading="lazy" onerror="this.style.display='none'"><span>${r.team.name}</span><small>Đội</small></a>`;
             if (r.player) return `<a class="search-result" href="#/player/${r.player.id}" onclick="document.getElementById('searchDropdown').style.display='none'">
-              <img src="${api.playerImg(r.player.id)}" onerror="this.style.display='none'"><span>${r.player.name}</span><small>${r.player.team?.name||''}</small></a>`;
+              <img src="${api.playerImg(r.player.id)}" loading="lazy" onerror="this.style.display='none'"><span>${r.player.name}</span><small>${r.player.team?.name||''}</small></a>`;
             return '';
           }).join('');
           dropdown.style.display = 'block';
@@ -210,22 +210,43 @@ const app = {
       recEl.innerHTML = this._renderRecommendations(this.liveMatches);
     } else if (recEl) { recEl.innerHTML = ''; }
 
-    if (!matches.length) { el.innerHTML = this._empty('😴', this._liveFilter === 'fav' ? 'Không có trận yêu thích. Thêm ★ vào giải đấu!' : this._currentMood ? 'Không có trận phù hợp mood này.' : 'Không có trận nào.'); return; }
+    if (!matches.length) { el.innerHTML = this._empty('😴', this._liveFilter === 'fav' ? 'Không có trận yêu thích. Thêm ★ vào giải đấu!' : this._currentMood ? 'Không có trận phù hợp mood này.' : 'Không có trận nào.'); this._liveHash = ''; return; }
 
-    const groups = this._groupByLeague(matches);
-    let html = '';
-    for (const [, g] of groups) {
-      html += `<div class="league-group"><div class="league-group-header">
-        <img src="${g.logo}" class="league-icon" onerror="this.outerHTML='⚽'">
-        <a href="#/league/${g.id}" class="league-name">${g.name}</a>
-        <span class="league-country">${g.country}</span>
-        ${favourites.starIcon('league', g.id)}
-        <span class="league-count">${g.matches.length}</span>
-      </div>`;
-      g.matches.forEach(m => { html += this._matchCard(m); });
-      html += '</div>';
+    // Smart update: only patch scores/badges if match list hasn't changed
+    const matchHash = matches.map(m => m.id).join(',');
+    if (this._liveHash === matchHash && el.children.length > 0) {
+      // Same matches — patch scores in-place (no DOM rebuild = no image reload)
+      matches.forEach(m => {
+        const card = el.querySelector(`[data-match-id="${m.id}"]`);
+        if (!card) return;
+        const scoreEl = card.querySelector('.match-score');
+        if (scoreEl) {
+          const txt = `${m.homeScore ?? '-'} - ${m.awayScore ?? '-'}`;
+          if (scoreEl.textContent.trim() !== txt) scoreEl.textContent = txt;
+          scoreEl.classList.toggle('live', m.status === 'LIVE');
+        }
+        const badge = card.querySelector('.match-badge');
+        const newBadge = m.status === 'LIVE' ? (m.minute || '⚡') : m.status === 'FT' ? 'KT' : m.status === 'HT' ? 'HT' : '';
+        if (badge && newBadge) badge.textContent = newBadge;
+      });
+    } else {
+      // Different match list — full rebuild
+      const groups = this._groupByLeague(matches);
+      let html = '';
+      for (const [, g] of groups) {
+        html += `<div class="league-group"><div class="league-group-header">
+          <img src="${g.logo}" class="league-icon" loading="lazy" onerror="this.outerHTML='⚽'">
+          <a href="#/league/${g.id}" class="league-name">${g.name}</a>
+          <span class="league-country">${g.country}</span>
+          ${favourites.starIcon('league', g.id)}
+          <span class="league-count">${g.matches.length}</span>
+        </div>`;
+        g.matches.forEach(m => { html += this._matchCard(m); });
+        html += '</div>';
+      }
+      el.innerHTML = html;
+      this._liveHash = matchHash;
     }
-    el.innerHTML = html;
 
     // Update stats
     const live = this.liveMatches.filter(m => m.status === 'LIVE');
@@ -261,12 +282,12 @@ const app = {
 
     return `<a href="#/match/${m.id}" class="match-card ${live ? 'is-live' : ft ? 'is-finished' : ''}" data-match-id="${m.id}">
       <div class="match-team home"><span>${m.home.short}</span>
-        <img class="team-logo" src="${m.home.logo}" onerror="this.style.display='none'"></div>
+        <img class="team-logo" src="${m.home.logo}" loading="lazy" onerror="this.style.display='none'"></div>
       <div class="match-center">
         <div class="match-score ${live ? 'live' : ''}">${m.homeScore ?? '-'} - ${m.awayScore ?? '-'}</div>
         ${badge}${ht}</div>
       <div class="match-team away">
-        <img class="team-logo" src="${m.away.logo}" onerror="this.style.display='none'">
+        <img class="team-logo" src="${m.away.logo}" loading="lazy" onerror="this.style.display='none'">
         <span>${m.away.short}</span></div>
     </a>`;
   },
@@ -376,7 +397,7 @@ const app = {
       const tags = this._classifyMatch(stats, m, incidents);
       html += `<div class="match-header-page">
         <div class="match-header-league">
-          <img src="${m.league.logo}" class="league-icon" onerror="this.style.display='none'">
+          <img src="${m.league.logo}" class="league-icon" loading="lazy" onerror="this.style.display='none'">
           <a href="#/league/${m.league.id}">${m.league.name}</a>
           ${m.round ? '- Vòng ' + m.round : m.roundName ? '- ' + m.roundName : ''}
         </div>
@@ -575,7 +596,7 @@ const app = {
       const rating = parseFloat(p.value || 0);
       const rColor = rating >= 7.5 ? 'var(--green)' : rating >= 6.5 ? 'var(--accent)' : 'var(--text-muted)';
       return `<a href="#/player/${p.player.id}" class="best-player-card">
-        <img src="${api.playerImg(p.player.id)}" onerror="this.style.display='none'">
+        <img src="${api.playerImg(p.player.id)}" loading="lazy" onerror="this.style.display='none'">
         <div><div class="player-name">${p.player.shortName}</div>
         <div class="player-rating" style="color:${rColor}">${rating.toFixed(1)}</div></div></a>`;
     };
@@ -648,7 +669,7 @@ const app = {
         const rating = p.statistics?.rating;
         const rColor = rating >= 7.5 ? 'var(--green)' : rating >= 6.5 ? 'var(--accent)' : 'var(--text-muted)';
         html += `<a href="#/player/${p.player?.id}" class="lineup-player">
-          <img src="${api.playerImg(p.player?.id)}" class="lineup-player-img" onerror="this.style.display='none'">
+          <img src="${api.playerImg(p.player?.id)}" class="lineup-player-img" loading="lazy" onerror="this.style.display='none'">
           <span class="lineup-num">${p.player?.jerseyNumber || ''}</span>
           <span class="lineup-name">${p.player?.shortName || ''}</span>
           <span class="lineup-pos">${this._posVi(p.player?.position)}</span>
@@ -815,7 +836,7 @@ const app = {
     const sid = lg?.seasonId;
 
     el.innerHTML = `
-      <div class="page-header"><h2><img src="${api.tournImg(tid)}" class="league-icon" onerror="this.style.display='none'"> ${lgName}</h2></div>
+      <div class="page-header"><h2><img src="${api.tournImg(tid)}" class="league-icon" loading="lazy" onerror="this.style.display='none'"> ${lgName}</h2></div>
       <div class="detail-tabs">
         <button class="tab-btn ${tab === 'overview' ? 'active' : ''}" onclick="router.navigate('#/league/${tid}')">Tổng quan</button>
         <button class="tab-btn ${tab === 'matches' ? 'active' : ''}" onclick="router.navigate('#/league/${tid}/matches')">Trận đấu</button>
@@ -850,7 +871,7 @@ const app = {
       html += '<thead><tr><th>#</th><th>Đội</th><th>Tr</th><th>T</th><th>H</th><th>B</th><th>Đ</th></tr></thead><tbody>';
       rows.slice(0, 6).forEach(r => {
         html += `<tr><td class="pos">${r.position}</td>
-          <td><a href="#/team/${r.team.id}" class="team-cell"><img class="team-logo-sm" src="${api.teamImg(r.team.id)}" onerror="this.style.display='none'">${r.team.shortName || r.team.name}</a></td>
+          <td><a href="#/team/${r.team.id}" class="team-cell"><img class="team-logo-sm" src="${api.teamImg(r.team.id)}" loading="lazy" onerror="this.style.display='none'">${r.team.shortName || r.team.name}</a></td>
           <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td><td><strong>${r.points}</strong></td></tr>`;
       });
       html += '</tbody></table><a href="#/league/' + tid + '/standings" class="view-all-link">Xem đầy đủ →</a></div>';
@@ -907,7 +928,7 @@ const app = {
         const form = (formMap[r.team.id] || []).map(f => `<span class="form-badge ${f}">${f}</span>`).join('');
         return `<tr class="${pc}">
           <td class="pos">${r.position}</td>
-          <td><a href="#/team/${r.team.id}" class="team-cell"><img class="team-logo-sm" src="${api.teamImg(r.team.id)}" onerror="this.style.display='none'">${r.team.name}</a></td>
+          <td><a href="#/team/${r.team.id}" class="team-cell"><img class="team-logo-sm" src="${api.teamImg(r.team.id)}" loading="lazy" onerror="this.style.display='none'">${r.team.name}</a></td>
           <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>
           <td>${r.scoresFor}</td><td>${r.scoresAgainst}</td><td>${r.scoreDiffFormatted || ''}</td>
           <td><strong>${r.points}</strong></td><td><div class="form-badges">${form}</div></td></tr>`;
@@ -944,9 +965,9 @@ const app = {
         const cls = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
         return `<a href="#/player/${player.id}" class="top-player-row">
           <div class="top-player-rank ${cls}">${i + 1}</div>
-          <img class="top-player-img" src="${api.playerImg(player.id)}" onerror="this.style.display='none'">
+          <img class="top-player-img" src="${api.playerImg(player.id)}" loading="lazy" onerror="this.style.display='none'">
           <div class="top-player-info"><div class="top-player-name">${player.shortName || player.name || '?'}</div>
-            <div class="top-player-team"><img src="${api.teamImg(team.id)}" onerror="this.style.display='none'">${team.shortName || team.name || ''}</div></div>
+            <div class="top-player-team"><img src="${api.teamImg(team.id)}" loading="lazy" onerror="this.style.display='none'">${team.shortName || team.name || ''}</div></div>
           <div class="top-player-stat">${display}</div></a>`;
       }).join('')}</div>`;
     } catch { el.innerHTML = this._err('Lỗi tải dữ liệu'); }
@@ -984,7 +1005,7 @@ const app = {
       let html = '';
       for (const [, g] of groups) {
         html += `<div class="league-group"><div class="league-group-header">
-          <img src="${g.logo}" class="league-icon" onerror="this.outerHTML='⚽'">
+          <img src="${g.logo}" class="league-icon" loading="lazy" onerror="this.outerHTML='⚽'">
           <a href="#/league/${g.id}" class="league-name">${g.name}</a>
           <span class="league-country">${g.country}</span>
           <span class="league-count">${g.matches.length}</span>
@@ -1018,7 +1039,7 @@ const app = {
       const next = (nextData.events || []).slice(0, 10).map(e => api.mapEvent(e));
 
       let html = `<div class="team-header">
-        <img src="${api.teamImg(teamId)}" class="team-logo-xl" onerror="this.style.display='none'">
+        <img src="${api.teamImg(teamId)}" class="team-logo-xl" loading="lazy" onerror="this.style.display='none'">
         <div>
           <h2>${team?.name || 'Đội bóng'}</h2>
           ${team?.venue ? `<div class="text-muted">🏟️ ${team.venue.stadium?.name || team.venue.name || ''} ${team.venue.stadium?.capacity ? '(' + team.venue.stadium.capacity.toLocaleString() + ')' : ''}</div>` : ''}
@@ -1064,10 +1085,10 @@ const app = {
       const value = p.proposedMarketValueRaw ? (p.proposedMarketValueRaw.value / 1e6).toFixed(1) + 'M €' : '';
 
       el.innerHTML = `<div class="player-header">
-        <img src="${api.playerImg(playerId)}" class="player-photo" onerror="this.style.display='none'">
+        <img src="${api.playerImg(playerId)}" class="player-photo" loading="lazy" onerror="this.style.display='none'">
         <div class="player-info">
           <h2>${p.name}</h2>
-          ${p.team ? `<a href="#/team/${p.team.id}" class="player-team"><img src="${api.teamImg(p.team.id)}" style="height:20px" onerror="this.style.display='none'"> ${p.team.name}</a>` : ''}
+          ${p.team ? `<a href="#/team/${p.team.id}" class="player-team"><img src="${api.teamImg(p.team.id)}" style="height:20px" loading="lazy" onerror="this.style.display='none'"> ${p.team.name}</a>` : ''}
           <div class="player-meta">
             ${p.position ? `<span>📍 ${this._posVi(p.position)}</span>` : ''}
             ${p.shirtNumber ? `<span>#${p.shirtNumber}</span>` : ''}
@@ -1169,9 +1190,9 @@ const app = {
     return `<div class="prediction-card">
       <div class="pred-header">
         <a href="#/match/${m.id}" class="pred-match">
-          <img src="${m.home.logo}" class="team-logo-sm" onerror="this.style.display='none'"> ${m.home.name} vs ${m.away.name} <img src="${m.away.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+          <img src="${m.home.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'"> ${m.home.name} vs ${m.away.name} <img src="${m.away.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
         </a>
-        <div class="pred-league"><img src="${m.league.logo}" style="height:14px" onerror="this.style.display='none'"> ${m.league.name} | ${kickoff}</div>
+        <div class="pred-league"><img src="${m.league.logo}" style="height:14px" loading="lazy" onerror="this.style.display='none'"> ${m.league.name} | ${kickoff}</div>
       </div>
       <div class="pred-body">
         <div class="pred-stat"><div class="pred-stat-label">Chủ${ht ? ' (H' + ht.position + ')' : ''}</div><div class="pred-stat-value text-blue">${hp}%</div></div>
@@ -1215,14 +1236,14 @@ const app = {
         html += '<h4 class="section-label">Đội bóng</h4>';
         teams.slice(0, 10).forEach(r => {
           const t = r.team || r;
-          html += `<a href="#/team/${t.id}" class="search-result-row"><img src="${api.teamImg(t.id)}" class="team-logo-sm" onerror="this.style.display='none'"><span>${t.name}</span></a>`;
+          html += `<a href="#/team/${t.id}" class="search-result-row"><img src="${api.teamImg(t.id)}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'"><span>${t.name}</span></a>`;
         });
       }
       if (players.length) {
         html += '<h4 class="section-label">Cầu thủ</h4>';
         players.slice(0, 10).forEach(r => {
           const p = r.player || r;
-          html += `<a href="#/player/${p.id}" class="search-result-row"><img src="${api.playerImg(p.id)}" class="team-logo-sm" onerror="this.style.display='none'"><span>${p.name}</span><small class="text-muted">${p.team?.name || ''}</small></a>`;
+          html += `<a href="#/player/${p.id}" class="search-result-row"><img src="${api.playerImg(p.id)}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'"><span>${p.name}</span><small class="text-muted">${p.team?.name || ''}</small></a>`;
         });
       }
       if (!html) html = this._empty('🔍', 'Không tìm thấy kết quả');
@@ -1347,7 +1368,7 @@ const app = {
             <span class="news-source">${a.source}</span>
             <span class="news-time">${pubDate}</span>
           </div>
-          ${a.imageUrl ? `<img src="${a.imageUrl}" class="news-detail-img" onerror="this.style.display='none'" alt="${a.titleVi || a.title}">` : ''}
+          ${a.imageUrl ? `<img src="${a.imageUrl}" class="news-detail-img" loading="lazy" onerror="this.style.display='none'" alt="${a.titleVi || a.title}">` : ''}
           <p class="news-detail-summary">${a.summaryVi || a.summary}</p>
           ${leagueTags ? `<div class="news-league-tags">${leagueTags}</div>` : ''}
           <a href="${a.link}" target="_blank" rel="noopener noreferrer" class="news-read-original">Đọc bài gốc tại ${a.source} &rarr;</a>
@@ -1590,7 +1611,7 @@ const app = {
       <div class="tt-quote">"${oracleQuote}"</div>
       <div class="tt-probs">
         <div class="tt-team home">
-          <img src="${match.home.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+          <img src="${match.home.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
           <span class="tt-team-name">${match.home.short}</span>
           <span class="tt-pct text-blue">${hp}%</span>
         </div>
@@ -1599,7 +1620,7 @@ const app = {
           <span class="tt-pct">${dp}%</span>
         </div>
         <div class="tt-team away">
-          <img src="${match.away.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+          <img src="${match.away.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
           <span class="tt-team-name">${match.away.short}</span>
           <span class="tt-pct text-red">${ap}%</span>
         </div>
@@ -1870,7 +1891,7 @@ const app = {
       <div class="hero-badge">🐴 Trận tâm điểm</div>
       <div class="hero-teams">
         <div class="hero-team">
-          <img src="${hero.home.logo}" class="hero-logo" onerror="this.style.display='none'">
+          <img src="${hero.home.logo}" class="hero-logo" loading="lazy" onerror="this.style.display='none'">
           <span>${hero.home.short}</span>
         </div>
         <div class="hero-score">
@@ -1878,7 +1899,7 @@ const app = {
           <span class="status-live">${hero.minute ? hero.minute + "'" : 'LIVE'}</span>
         </div>
         <div class="hero-team">
-          <img src="${hero.away.logo}" class="hero-logo" onerror="this.style.display='none'">
+          <img src="${hero.away.logo}" class="hero-logo" loading="lazy" onerror="this.style.display='none'">
           <span>${hero.away.short}</span>
         </div>
       </div>
@@ -1897,11 +1918,11 @@ const app = {
         const tags = this._classifyMatch([], m, []);
         return `<a href="#/match/${m.id}" class="rec-card">
           <div class="rec-teams">
-            <img src="${m.home.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+            <img src="${m.home.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
             <span>${m.home.short}</span>
             <span class="rec-score">${m.homeScore}-${m.awayScore}</span>
             <span>${m.away.short}</span>
-            <img src="${m.away.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+            <img src="${m.away.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
           </div>
           <div class="rec-meta">
             <span class="status-live">${m.minute ? m.minute + "'" : 'LIVE'}</span>
