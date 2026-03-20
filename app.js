@@ -113,18 +113,12 @@ const app = {
     this.showPanel(false);
     const el = document.getElementById('page-content');
     el.innerHTML = `
-      <div class="page-header">
-        <h2><span class="pulse-dot"></span> Trực Tiếp</h2>
-        <div class="live-stats-bar">
-          <div class="stat-item"><span class="stat-number" id="statLive">0</span><span class="stat-label">Live</span></div>
-          <div class="stat-item"><span class="stat-number" id="statGoals">0</span><span class="stat-label">Bàn</span></div>
-          <div class="stat-item"><span class="stat-number" id="statLeagues">0</span><span class="stat-label">Giải</span></div>
-        </div>
-      </div>
+      <div id="heroSpotlight"></div>
       <div class="social-proof-bar" id="socialProofBar">
-        <span class="sp-item">📊 <span id="spAnalyzed">0</span> trận phân tích</span>
-        <span class="sp-item">🎯 <span id="spAccuracy">--</span>% chính xác</span>
-        <span class="sp-item">💬 <span id="spChatters">0</span> fan online</span>
+        <span class="sp-item"><span class="sp-icon">🔴</span> <span id="statLive">0</span> trận live</span>
+        <span class="sp-item"><span class="sp-icon">⚽</span> <span id="statGoals">0</span> bàn thắng</span>
+        <span class="sp-item"><span class="sp-icon">📊</span> <span id="spAnalyzed">0</span> trận AI phân tích</span>
+        <span class="sp-item"><span class="sp-icon">💬</span> <span id="spChatters">0</span> fan online</span>
       </div>
       <div class="date-strip" id="dateStrip"></div>
       <div class="filter-bar">
@@ -204,11 +198,16 @@ const app = {
     // Apply mood filter
     if (this._currentMood) matches = matches.filter(m => this._matchesMood(m, this._currentMood));
 
-    // Render recommendations
+    // Render hero spotlight (always, regardless of filter)
+    if (!this._currentMood && (this._liveFilter === 'live' || this._liveFilter === 'all')) {
+      this._renderHeroSpotlight(this.liveMatches);
+    } else {
+      const heroEl = document.getElementById('heroSpotlight');
+      if (heroEl) heroEl.innerHTML = '';
+    }
+    // Legacy recommendations slot (now handled by hero)
     const recEl = document.getElementById('liveRecommendations');
-    if (recEl && !this._currentMood && this._liveFilter === 'live') {
-      recEl.innerHTML = this._renderRecommendations(this.liveMatches);
-    } else if (recEl) { recEl.innerHTML = ''; }
+    if (recEl) recEl.innerHTML = '';
 
     if (!matches.length) { el.innerHTML = this._empty('😴', this._liveFilter === 'fav' ? 'Không có trận yêu thích. Thêm ★ vào giải đấu!' : this._currentMood ? 'Không có trận phù hợp mood này.' : 'Không có trận nào.'); this._liveHash = ''; return; }
 
@@ -248,16 +247,8 @@ const app = {
       this._liveHash = matchHash;
     }
 
-    // Update stats
-    const live = this.liveMatches.filter(m => m.status === 'LIVE');
-    const goals = live.reduce((s, m) => s + (m.homeScore || 0) + (m.awayScore || 0), 0);
-    const leagues = new Set(live.map(m => m.league.name)).size;
-    const slEl = document.getElementById('statLive');
-    if (slEl) slEl.textContent = live.length;
-    const sgEl = document.getElementById('statGoals');
-    if (sgEl) sgEl.textContent = goals;
-    const slgEl = document.getElementById('statLeagues');
-    if (slgEl) slgEl.textContent = leagues;
+    // Update live stats immediately from data
+    this._updateLiveCount(this.liveMatches);
   },
 
   // ═══════════════════════════════════════
@@ -1475,8 +1466,18 @@ const app = {
   },
 
   _updateLiveCount(matches) {
+    const live = matches.filter(m => m.status === 'LIVE');
+    const liveCount = live.length;
+    const goals = live.reduce((s, m) => s + (m.homeScore || 0) + (m.awayScore || 0), 0);
+
+    // Header badge
     const el = document.getElementById('liveCount');
-    if (el) el.textContent = matches.filter(m => m.status === 'LIVE').length;
+    if (el) el.textContent = liveCount;
+    // Homepage stats
+    const slEl = document.getElementById('statLive');
+    if (slEl) slEl.textContent = liveCount;
+    const sgEl = document.getElementById('statGoals');
+    if (sgEl) sgEl.textContent = goals;
   },
 
   // ═══════════════════════════════════════
@@ -1917,68 +1918,141 @@ const app = {
   },
 
   _renderRecommendations(matches) {
-    const live = matches.filter(m => m.status === 'LIVE');
-    if (live.length < 2) return '';
-    const scored = live.map(m => ({ match: m, score: this._scoreMatchInterest(m) }))
-      .sort((a, b) => b.score - a.score).slice(0, 3);
-    if (scored[0].score < 15) return '';
+    // Recommendations are now handled by _renderHeroSpotlight
+    return '';
+  },
 
-    // Hero match = top pick
+  // ═══════════════════════════════════════
+  //  HERO SPOTLIGHT (always visible)
+  // ═══════════════════════════════════════
+  _renderHeroSpotlight(matches) {
+    const el = document.getElementById('heroSpotlight');
+    if (!el) return;
+
+    // Pick best match: live > recently finished > upcoming
+    const live = matches.filter(m => m.status === 'LIVE');
+    const finished = matches.filter(m => m.status === 'FT');
+    const upcoming = matches.filter(m => m.status === 'NS');
+
+    let pool = live.length ? live : finished.length ? finished : upcoming;
+    if (!pool.length) { el.innerHTML = ''; return; }
+
+    const scored = pool.map(m => ({ match: m, score: this._scoreMatchInterest(m) }))
+      .sort((a, b) => b.score - a.score);
     const hero = scored[0].match;
+    const isLive = hero.status === 'LIVE';
+    const isFinished = hero.status === 'FT';
     const heroTags = this._classifyMatch([], hero, []);
     const heroQuote = this._generateOracleQuote(50, 25, 25, [], hero);
-    const rest = scored.slice(1);
+    const rest = scored.slice(1, 3).filter(s => s.score >= 10);
 
-    let html = `<div class="recommendations-section">`;
-
-    // Hero card
-    html += `<a href="#/match/${hero.id}" class="hero-match">
-      <div class="hero-badge">🐴 Trận tâm điểm</div>
-      <div class="hero-teams">
-        <div class="hero-team">
-          <img src="${hero.home.logo}" class="hero-logo" loading="lazy" onerror="this.style.display='none'">
-          <span>${hero.home.short}</span>
-        </div>
-        <div class="hero-score">
-          <span class="hero-score-num">${hero.homeScore ?? '-'} - ${hero.awayScore ?? '-'}</span>
-          <span class="status-live">${hero.minute ? hero.minute + "'" : 'LIVE'}</span>
-        </div>
-        <div class="hero-team">
-          <img src="${hero.away.logo}" class="hero-logo" loading="lazy" onerror="this.style.display='none'">
-          <span>${hero.away.short}</span>
-        </div>
-      </div>
-      <div class="hero-oracle">"${heroQuote}" 🐴</div>
-      ${heroTags.length ? `<div class="hero-tags">${this._renderMatchTags(heroTags)}</div>` : ''}
-      <div class="hero-actions">
-        <span class="hero-btn">💬 Vào chat</span>
-        <span class="hero-btn" onclick="event.preventDefault();event.stopPropagation();app._shareTienTri(${hero.id})">📤 Chia sẻ</span>
-      </div>
-    </a>`;
-
-    // Remaining cards
-    if (rest.length) {
-      html += `<div class="rec-grid">${rest.map(s => {
-        const m = s.match;
-        const tags = this._classifyMatch([], m, []);
-        return `<a href="#/match/${m.id}" class="rec-card">
-          <div class="rec-teams">
-            <img src="${m.home.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
-            <span>${m.home.short}</span>
-            <span class="rec-score">${m.homeScore}-${m.awayScore}</span>
-            <span>${m.away.short}</span>
-            <img src="${m.away.logo}" class="team-logo-sm" loading="lazy" onerror="this.style.display='none'">
-          </div>
-          <div class="rec-meta">
-            <span class="status-live">${m.minute ? m.minute + "'" : 'LIVE'}</span>
-            ${tags.length ? this._renderMatchTags(tags) : ''}
-          </div>
-        </a>`;
-      }).join('')}</div>`;
+    // Status badge
+    let statusBadge;
+    if (isLive) statusBadge = `<span class="hero-status-live">${hero.minute ? hero.minute + "'" : 'LIVE'}</span>`;
+    else if (isFinished) statusBadge = `<span class="hero-status-ft">KT</span>`;
+    else {
+      const t = hero.startTs ? new Date(hero.startTs * 1000).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : 'TBD';
+      statusBadge = `<span class="hero-status-ns">${t}</span>`;
     }
 
-    html += `</div>`;
-    return html;
+    // Score display
+    const scoreDisplay = hero.homeScore != null
+      ? `${hero.homeScore} - ${hero.awayScore}`
+      : 'VS';
+
+    // Build hero HTML
+    let html = `<div class="hero-spotlight ${isLive ? 'hero-live' : isFinished ? 'hero-ft' : 'hero-ns'}">
+      <div class="hero-main">
+        <a href="#/match/${hero.id}" class="hero-match-link">
+          <div class="hero-header">
+            <span class="hero-badge">${isLive ? '🔴 TRẬN TÂM ĐIỂM' : isFinished ? '🏁 VỪA KẾT THÚC' : '⏳ SẮP DIỄN RA'}</span>
+            <span class="hero-league">${hero.league.name}</span>
+          </div>
+          <div class="hero-teams">
+            <div class="hero-team">
+              <img src="${hero.home.logo}" class="hero-logo" loading="lazy" onerror="this.style.display='none'">
+              <span class="hero-team-name">${hero.home.short}</span>
+            </div>
+            <div class="hero-score-block">
+              <span class="hero-score-num">${scoreDisplay}</span>
+              ${statusBadge}
+            </div>
+            <div class="hero-team">
+              <img src="${hero.away.logo}" class="hero-logo" loading="lazy" onerror="this.style.display='none'">
+              <span class="hero-team-name">${hero.away.short}</span>
+            </div>
+          </div>
+        </a>
+        <div class="hero-oracle-row">
+          <span class="hero-oracle-avatar">🐴</span>
+          <span class="hero-oracle-text">"${heroQuote}"</span>
+        </div>
+        ${heroTags.length ? `<div class="hero-tags">${this._renderMatchTags(heroTags)}</div>` : ''}
+        <div class="hero-actions">
+          <a href="#/match/${hero.id}" class="hero-cta hero-cta-primary">💬 Vào chat & xem phân tích</a>
+          <button class="hero-cta hero-cta-secondary" onclick="app._shareTienTri(${hero.id})">📤 Chia sẻ dự đoán</button>
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="hero-card-preview" id="heroCardPreview">
+          <div class="viral-card-mini">
+            <div class="vcm-header">🐴 Ngựa Tiên Tri</div>
+            <div class="vcm-teams">
+              <span class="vcm-home">${hero.home.short}</span>
+              <span class="vcm-score">${scoreDisplay}</span>
+              <span class="vcm-away">${hero.away.short}</span>
+            </div>
+            <div class="vcm-bars" id="heroProbs"></div>
+            <div class="vcm-quote">"${heroQuote.length > 60 ? heroQuote.substring(0, 57) + '...' : heroQuote}"</div>
+            <div class="vcm-brand">BongDa365.com</div>
+          </div>
+          <button class="hero-share-btn" onclick="app._shareTienTri(${hero.id})">📤 Chia sẻ card này</button>
+        </div>
+      </div>
+    </div>`;
+
+    // Secondary picks
+    if (rest.length) {
+      html += `<div class="hero-picks">
+        <span class="hero-picks-label">Đáng xem:</span>
+        ${rest.map(s => {
+          const m = s.match;
+          const mLive = m.status === 'LIVE';
+          return `<a href="#/match/${m.id}" class="hero-pick">
+            <img src="${m.home.logo}" class="pick-logo" loading="lazy" onerror="this.style.display='none'">
+            <span class="pick-name">${m.home.short}</span>
+            <span class="pick-score ${mLive ? 'live' : ''}">${m.homeScore ?? '-'} - ${m.awayScore ?? '-'}</span>
+            <span class="pick-name">${m.away.short}</span>
+            <img src="${m.away.logo}" class="pick-logo" loading="lazy" onerror="this.style.display='none'">
+            ${mLive ? `<span class="pick-live">${m.minute ? m.minute + "'" : 'LIVE'}</span>` : ''}
+          </a>`;
+        }).join('')}
+      </div>`;
+    }
+
+    el.innerHTML = html;
+
+    // Fetch predictions for hero match probability bars
+    this._loadHeroPredictions(hero.id);
+  },
+
+  async _loadHeroPredictions(matchId) {
+    const barsEl = document.getElementById('heroProbs');
+    if (!barsEl) return;
+    try {
+      const res = await fetch(`/api/predictions/${matchId}`);
+      const pred = await res.json();
+      const hp = pred.homeWin || 33, dp = pred.draw || 34, ap = pred.awayWin || 33;
+      barsEl.innerHTML = `
+        <div class="vcm-bar-row"><span class="vcm-bar-label">Chủ</span><div class="vcm-bar-track"><div class="vcm-bar vcm-bar-home" style="width:${hp}%"></div></div><span class="vcm-bar-pct">${hp}%</span></div>
+        <div class="vcm-bar-row"><span class="vcm-bar-label">Hòa</span><div class="vcm-bar-track"><div class="vcm-bar vcm-bar-draw" style="width:${dp}%"></div></div><span class="vcm-bar-pct">${dp}%</span></div>
+        <div class="vcm-bar-row"><span class="vcm-bar-label">Khách</span><div class="vcm-bar-track"><div class="vcm-bar vcm-bar-away" style="width:${ap}%"></div></div><span class="vcm-bar-pct">${ap}%</span></div>`;
+    } catch {
+      barsEl.innerHTML = `
+        <div class="vcm-bar-row"><span class="vcm-bar-label">Chủ</span><div class="vcm-bar-track"><div class="vcm-bar vcm-bar-home" style="width:33%"></div></div><span class="vcm-bar-pct">33%</span></div>
+        <div class="vcm-bar-row"><span class="vcm-bar-label">Hòa</span><div class="vcm-bar-track"><div class="vcm-bar vcm-bar-draw" style="width:34%"></div></div><span class="vcm-bar-pct">34%</span></div>
+        <div class="vcm-bar-row"><span class="vcm-bar-label">Khách</span><div class="vcm-bar-track"><div class="vcm-bar vcm-bar-away" style="width:33%"></div></div><span class="vcm-bar-pct">33%</span></div>`;
+    }
   },
 
   // ═══════════════════════════════════════

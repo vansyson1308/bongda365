@@ -618,6 +618,86 @@ a { color: inherit; text-decoration: none; }
 .hero-btn:hover { background: #f59e0b44; }
 
 /* ============================================
+   v7.0 — Hero Spotlight + Viral Card Mini
+   ============================================ */
+.hero-spotlight { display: grid; grid-template-columns: 1fr 260px; gap: 16px; background: linear-gradient(135deg, #0a0e17 0%, #1a1a2e 50%, #16213e 100%); border: 2px solid #f59e0b44; border-radius: var(--radius-lg); padding: 20px; margin-bottom: 14px; position: relative; overflow: hidden; }
+.hero-spotlight::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #f59e0b, #f97316, #ef4444, #f59e0b); animation: heroGlow 3s linear infinite; background-size: 200% 100%; }
+@keyframes heroGlow { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; } }
+.hero-live { border-color: #ef444455; }
+.hero-live::before { background: linear-gradient(90deg, #ef4444, #f97316, #f59e0b, #ef4444); }
+
+.hero-main { display: flex; flex-direction: column; }
+.hero-match-link { text-decoration: none; color: var(--text-primary); }
+.hero-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.hero-badge { font-size: 12px; font-weight: 800; color: #f59e0b; text-transform: uppercase; letter-spacing: 1.2px; }
+.hero-live .hero-badge { color: #ef4444; }
+.hero-league { font-size: 11px; color: var(--text-muted); }
+.hero-teams { display: flex; align-items: center; justify-content: center; gap: 24px; margin-bottom: 14px; }
+.hero-team { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 70px; }
+.hero-team-name { font-size: 14px; font-weight: 700; }
+.hero-logo { height: 44px; width: 44px; }
+.hero-score-block { text-align: center; }
+.hero-score-num { font-size: 36px; font-weight: 900; letter-spacing: -1px; display: block; line-height: 1; }
+.hero-status-live { display: inline-block; background: #ef4444; color: #fff; font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 10px; animation: pulse 1.5s infinite; margin-top: 4px; }
+.hero-status-ft { display: inline-block; background: var(--text-muted); color: var(--bg-primary); font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 10px; margin-top: 4px; }
+.hero-status-ns { display: inline-block; background: var(--border); color: var(--text-primary); font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 10px; margin-top: 4px; }
+
+.hero-oracle-row { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; background: #f59e0b0d; border-radius: var(--radius); margin-bottom: 10px; border-left: 3px solid #f59e0b; }
+.hero-oracle-avatar { font-size: 24px; flex-shrink: 0; }
+.hero-oracle-text { font-style: italic; color: #f59e0b; font-size: 13px; line-height: 1.4; }
+
+.hero-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 10px; }
+.hero-cta { display: inline-flex; align-items: center; gap: 4px; padding: 8px 18px; border-radius: 20px; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: none; transition: all 0.2s; border: none; font-family: inherit; }
+.hero-cta-primary { background: linear-gradient(135deg, #f59e0b, #f97316); color: #000; }
+.hero-cta-primary:hover { transform: scale(1.03); box-shadow: 0 4px 16px rgba(245,158,11,0.4); }
+.hero-cta-secondary { background: #f59e0b22; color: #f59e0b; border: 1px solid #f59e0b44; }
+.hero-cta-secondary:hover { background: #f59e0b33; }
+
+/* Viral Card Mini (hero side panel) */
+.hero-side { display: flex; flex-direction: column; align-items: center; }
+.hero-card-preview { width: 100%; }
+.viral-card-mini { background: linear-gradient(180deg, #0f172a, #1e293b); border: 1px solid #f59e0b44; border-radius: 12px; padding: 14px; text-align: center; position: relative; overflow: hidden; }
+.viral-card-mini::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, #f59e0b, #f97316); }
+.vcm-header { color: #f59e0b; font-size: 14px; font-weight: 800; margin-bottom: 10px; letter-spacing: 0.5px; }
+.vcm-teams { display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px; }
+.vcm-score { font-size: 22px; font-weight: 900; color: #f59e0b; }
+.vcm-bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.vcm-bar-row { display: flex; align-items: center; gap: 6px; }
+.vcm-bar-label { font-size: 10px; color: var(--text-muted); width: 32px; text-align: right; }
+.vcm-bar-track { flex: 1; height: 8px; background: #1a2236; border-radius: 4px; overflow: hidden; }
+.vcm-bar { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+.vcm-bar-home { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+.vcm-bar-draw { background: linear-gradient(90deg, #6b7280, #9ca3af); }
+.vcm-bar-away { background: linear-gradient(90deg, #ef4444, #f87171); }
+.vcm-bar-pct { font-size: 11px; font-weight: 700; color: var(--text-secondary); width: 32px; }
+.vcm-quote { font-style: italic; color: #f59e0b99; font-size: 11px; margin-bottom: 8px; line-height: 1.3; }
+.vcm-brand { font-size: 10px; color: var(--text-muted); letter-spacing: 0.5px; }
+.hero-share-btn { width: 100%; margin-top: 8px; background: #f59e0b22; color: #f59e0b; border: 1px solid #f59e0b44; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background 0.2s; font-family: inherit; }
+.hero-share-btn:hover { background: #f59e0b33; }
+
+/* Hero secondary picks */
+.hero-picks { display: flex; gap: 8px; margin-bottom: 14px; overflow-x: auto; padding-bottom: 4px; }
+.hero-picks-label { font-size: 11px; color: var(--text-muted); font-weight: 600; white-space: nowrap; padding: 6px 0; }
+.hero-pick { display: flex; align-items: center; gap: 4px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; text-decoration: none; color: var(--text-primary); font-size: 11px; white-space: nowrap; transition: border-color 0.2s; flex-shrink: 0; }
+.hero-pick:hover { border-color: #f59e0b; }
+.pick-logo { height: 16px; width: 16px; }
+.pick-name { font-weight: 600; }
+.pick-score { font-weight: 800; color: var(--accent); margin: 0 2px; }
+.pick-score.live { color: #ef4444; }
+.pick-live { font-size: 9px; background: #ef4444; color: #fff; padding: 1px 5px; border-radius: 6px; font-weight: 700; }
+
+/* Social proof improvements */
+.sp-icon { display: inline; margin-right: 2px; }
+.social-proof-bar .sp-item span[id] { color: #f59e0b; font-weight: 800; font-size: 14px; }
+
+/* Mobile: stack hero */
+@media (max-width: 768px) {
+  .hero-spotlight { grid-template-columns: 1fr; }
+  .hero-side { margin-top: 8px; }
+  .hero-picks { flex-wrap: nowrap; }
+}
+
+/* ============================================
    v5.0 — Mood Filter
    ============================================ */
 .filter-sep { color: var(--border); margin: 0 2px; }
