@@ -296,6 +296,19 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+// ── Prediction Leaderboard (in-memory, resets on restart) ──
+const predLeaderboard = new Map();
+
+function getLeaderboardTop() {
+  return [...predLeaderboard.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20);
+}
+
+function broadcastLeaderboard() {
+  io.emit('leaderboard', { leaderboard: getLeaderboardTop() });
+}
+
 // ── Socket.io ──
 const io = new SocketIO(server, {
   cors: { origin: '*' },
@@ -334,6 +347,23 @@ io.on('connection', socket => {
     if (!data.matchId || !data.emoji) return;
     io.to(`match_${data.matchId}`).emit('reaction', { emoji: data.emoji, ts: Date.now() });
   });
+
+  // ── Prediction Leaderboard (Sprint 7) ──
+  socket.on('pred_score', data => {
+    if (!data?.user || data.score == null) return;
+    const user = String(data.user).slice(0, 20);
+    const entry = predLeaderboard.get(user) || { user, score: 0, exact: 0, correct: 0, wrong: 0 };
+    entry.score += (data.points || 0);
+    if (data.points === 3) entry.exact++;
+    else if (data.points === 1) entry.correct++;
+    else entry.wrong++;
+    predLeaderboard.set(user, entry);
+    broadcastLeaderboard();
+  });
+
+  socket.on('get_leaderboard', () => {
+    socket.emit('leaderboard', { leaderboard: getLeaderboardTop() });
+  });
 });
 
 // ── Broadcast: Bus events -> Socket.io ──
@@ -365,6 +395,72 @@ commentary.start(entry => {
 // Predictions -> Socket.io
 predictions.start(data => {
   io.to(`match_${data.matchId}`).emit('predictions', data);
+});
+
+// ── Match Context Builder (Sprint 6) ──
+// Build narrative context on kickoff using standings + form
+async function buildMatchContext(matchId, home, away, leagueId, seasonId) {
+  try {
+    if (!leagueId || !seasonId) return;
+    const result = await fetchSofa(`/api/v1/unique-tournament/${leagueId}/season/${seasonId}/standings/total`);
+    if (!result || result.status !== 200) return;
+    const data = JSON.parse(result.body.toString());
+    const rows = data.standings?.[0]?.rows || [];
+    if (!rows.length) return;
+
+    const homeRow = rows.find(r => r.team?.name === home || r.team?.shortName === home);
+    const awayRow = rows.find(r => r.team?.name === away || r.team?.shortName === away);
+
+    const narratives = [];
+
+    if (homeRow && awayRow) {
+      const hPos = homeRow.position || rows.indexOf(homeRow) + 1;
+      const aPos = awayRow.position || rows.indexOf(awayRow) + 1;
+
+      // Title race
+      if (hPos <= 2 && aPos <= 2) {
+        narratives.push(`Đại chiến ngôi đầu! Cả hai đội đều trong top 2 bảng xếp hạng.`);
+      }
+      // Top vs bottom
+      else if (hPos <= 4 && aPos >= rows.length - 3) {
+        narratives.push(`${home} (hạng ${hPos}) tiếp đón ${away} (hạng ${aPos}). Chênh lệch đẳng cấp rõ rệt.`);
+      }
+      else if (aPos <= 4 && hPos >= rows.length - 3) {
+        narratives.push(`${away} (hạng ${aPos}) hành quân đến sân ${home} (hạng ${hPos}). Cơ hội lớn cho đội khách.`);
+      }
+      // Relegation battle
+      if (hPos >= rows.length - 3 && aPos >= rows.length - 3) {
+        narratives.push(`Trận chiến trụ hạng! Cả ${home} và ${away} đang trong vùng nguy hiểm.`);
+      }
+      // Must win
+      if (hPos >= 15 && aPos <= 5) {
+        narratives.push(`${home} buộc phải thắng để cải thiện vị trí trên BXH.`);
+      }
+    }
+
+    if (narratives.length > 0) {
+      commentary.setMatchContext(matchId, { narrative: narratives[0] });
+    }
+  } catch { /* silent */ }
+}
+
+// Listen for kickoff to build context
+bus.on('kickoff', d => {
+  if (d.matchId && d.home && d.away) {
+    // Try to extract league info from cached live data
+    let leagueId, seasonId;
+    if (cachedLive) {
+      try {
+        const data = JSON.parse(cachedLive);
+        const ev = (data.events || []).find(e => e.id == d.matchId);
+        if (ev?.tournament?.uniqueTournament?.id) {
+          leagueId = ev.tournament.uniqueTournament.id;
+          seasonId = ev.season?.id;
+        }
+      } catch {}
+    }
+    buildMatchContext(d.matchId, d.home, d.away, leagueId, seasonId);
+  }
 });
 
 // ── SofaScore Polling ──
@@ -554,7 +650,7 @@ server.on('error', (err) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
-  ⚽ BongDa365 v3.0 - http://localhost:${PORT}
+  ⚽ BongDa365 v5.0 - http://localhost:${PORT}
 
   Architecture: Event Bus + SPA Router
     SofaScore ──→ Detector ──→ Event Bus ──→ Commentary Engine

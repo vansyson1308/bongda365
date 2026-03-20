@@ -31,6 +31,9 @@ const chat = {
     this.socket.on('commentary', entry => this.addCommentary(entry));
     this.socket.on('commentary_log', log => { if (Array.isArray(log)) log.forEach(e => this.addCommentary(e)); });
     this.socket.on('predictions', data => this.updatePredictions(data));
+    this.socket.on('leaderboard', data => {
+      if (typeof app !== 'undefined' && app._renderLeaderboard) app._renderLeaderboard(data);
+    });
     this.socket.on('match_event', event => this.onMatchEvent(event));
     this.socket.on('live_event', event => this.onLiveEvent(event));
     this.socket.on('live_update', (data) => {
@@ -154,6 +157,19 @@ const chat = {
     }
     if (event.type === 'red_card') {
       showToast(`🟥 Thẻ đỏ: ${event.data.player} (${event.data.team})`, 'red_card');
+    }
+    // Push notification for favourite teams
+    if (typeof favourites !== 'undefined' && event.data) {
+      favourites.checkLiveEventForFav({
+        matchId: event.data.matchId,
+        type: event.type,
+        homeTeam: { id: event.data.homeId, shortName: event.data.home },
+        awayTeam: { id: event.data.awayId, shortName: event.data.away },
+        homeScore: event.data.score?.home,
+        awayScore: event.data.score?.away,
+        player: event.data.player,
+        minute: event.data.minute
+      });
     }
   },
 

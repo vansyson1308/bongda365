@@ -36,5 +36,49 @@ const favourites = {
     const has = type === 'league' ? this.hasLeague(id) : this.hasTeam(id);
     const fn = type === 'league' ? 'toggleLeague' : 'toggleTeam';
     return `<span class="fav-star ${has ? 'active' : ''}" onclick="event.stopPropagation();favourites.${fn}(${id})">${has ? '★' : '☆'}</span>`;
+  },
+
+  // ── Notifications for favourite teams ──
+  _notifAsked: false,
+
+  async requestNotifPermission() {
+    if (this._notifAsked || !('Notification' in window)) return;
+    this._notifAsked = true;
+    if (Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+  },
+
+  canNotify() {
+    return 'Notification' in window && Notification.permission === 'granted';
+  },
+
+  sendNotification(title, body, matchId) {
+    if (!this.canNotify()) return;
+    try {
+      const n = new Notification(title, {
+        body, icon: '/icon-192.png', badge: '/icon-192.png',
+        tag: `match-${matchId}`, renotify: true
+      });
+      n.onclick = () => { window.focus(); if (matchId) router.navigate(`#/match/${matchId}`); };
+      setTimeout(() => n.close(), 8000);
+    } catch {}
+  },
+
+  checkLiveEventForFav(event) {
+    if (!event || !this.canNotify()) return;
+    const { matchId, type, homeTeam, awayTeam, homeScore, awayScore, player, minute } = event;
+    const isFavHome = homeTeam?.id && this.hasTeam(homeTeam.id);
+    const isFavAway = awayTeam?.id && this.hasTeam(awayTeam.id);
+    if (!isFavHome && !isFavAway) return;
+
+    const matchTitle = `${homeTeam?.shortName || '?'} ${homeScore ?? '?'}-${awayScore ?? '?'} ${awayTeam?.shortName || '?'}`;
+    if (type === 'goal') {
+      this.sendNotification(`⚽ BÀN THẮNG! ${matchTitle}`, `${player || ''} ${minute ? minute + "'" : ''}`, matchId);
+    } else if (type === 'red_card') {
+      this.sendNotification(`🟥 THẺ ĐỎ! ${matchTitle}`, `${player || ''} ${minute ? minute + "'" : ''}`, matchId);
+    } else if (type === 'fulltime') {
+      this.sendNotification(`🏁 KẾT THÚC: ${matchTitle}`, `Trận đấu kết thúc`, matchId);
+    }
   }
 };

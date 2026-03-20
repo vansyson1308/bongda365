@@ -76,6 +76,15 @@ const predGame = {
     // Keep last 100 matches
     if (scores.matches.length > 100) scores.matches = scores.matches.slice(-100);
     localStorage.setItem(this.SCORE_KEY, JSON.stringify(scores));
+
+    // Emit to server leaderboard
+    if (typeof chat !== 'undefined' && chat.socket) {
+      chat.socket.emit('pred_score', {
+        user: this.username,
+        points,
+        score: scores.total,
+      });
+    }
   },
 
   // Render prediction form for a match

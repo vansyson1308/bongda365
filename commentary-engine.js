@@ -7,6 +7,8 @@ class CommentaryEngine {
   constructor() {
     this.matchNarrative = new Map(); // matchId -> narrative state
     this.commentaryLog = new Map(); // matchId -> [{text, priority, ts}]
+    this.matchContext = new Map(); // matchId -> { context narrative, standings info }
+    this.matchIncidentSummary = new Map(); // matchId -> { goals, cards, subs, penalties }
     this.onCommentary = null; // callback to broadcast
   }
 
@@ -78,6 +80,14 @@ class CommentaryEngine {
 
     this._emit(matchId, this._pick(templates), 'critical', 'goal');
 
+    // Track for smart summary
+    const summary = this.matchIncidentSummary.get(matchId);
+    if (summary) {
+      summary.goals++;
+      summary.keyMoments.push(`⚽ ${d.player || teamName} (${minute}')`);
+      if (d.penalty) summary.penalties++;
+    }
+
     // Follow-up insight
     if (score.home > 0 && score.away > 0) {
       setTimeout(() => {
@@ -97,6 +107,14 @@ class CommentaryEngine {
       `🟥 THẺ ĐỎ! ${player} (${team}) bị đuổi khỏi sân ở phút ${minute}! ${team} phải chơi thiếu người! Xác suất thắng giảm ~20%.`,
       'critical', 'red_card');
 
+    // Track for smart summary
+    const summary = this.matchIncidentSummary.get(matchId);
+    if (summary) {
+      summary.redCards++;
+      summary.cards++;
+      summary.keyMoments.push(`🟥 ${player || team} (${minute}')`);
+    }
+
     setTimeout(() => {
       this._emit(matchId,
         `📊 Thống kê: Đội bị thẻ đỏ thua 65% các trận còn lại. ${team} đang ở thế rất khó khăn.`,
@@ -108,6 +126,12 @@ class CommentaryEngine {
     if (d.cardType === 'red' || d.cardType === 'yellowred') return; // handled by red_card
     const { matchId, team, player, minute } = d;
     this._emit(matchId, `🟨 ${player} (${team}) nhận thẻ vàng phút ${minute}.`, 'low', 'card');
+
+    // Track for smart summary
+    const summary = this.matchIncidentSummary.get(matchId);
+    if (summary) {
+      summary.cards++;
+    }
   }
 
   _onHalftime(d) {
@@ -127,12 +151,57 @@ class CommentaryEngine {
     this._emit(matchId,
       `🏁 KẾT THÚC! ${home} ${score.home}-${score.away} ${away}. ${result}`,
       'high', 'fulltime');
+
+    // Smart post-match summary
+    const summary = this.matchIncidentSummary.get(matchId);
+    if (summary) {
+      setTimeout(() => {
+        const total = score.home + score.away;
+        const parts = [];
+
+        if (total > 0) parts.push(`${total} bàn thắng`);
+        if (summary.redCards > 0) parts.push(`${summary.redCards} thẻ đỏ`);
+        if (summary.cards > 0) parts.push(`${summary.cards} thẻ phạt`);
+        if (summary.penalties > 0) parts.push(`${summary.penalties} penalty`);
+
+        let summaryText = '';
+        if (parts.length > 0) {
+          summaryText = `📋 Tóm tắt: ${parts.join(', ')} trong 90 phút`;
+          if (total >= 4) summaryText += ' điên rồ';
+          summaryText += '.';
+        }
+
+        // Add key moments highlight
+        if (summary.keyMoments.length > 0) {
+          const lastMoment = summary.keyMoments[summary.keyMoments.length - 1];
+          if (total >= 3 || summary.redCards > 0) {
+            summaryText += ` Sự kiện nổi bật: ${summary.keyMoments.slice(-3).join(', ')}.`;
+          }
+        }
+
+        if (summaryText) {
+          this._emit(matchId, summaryText, 'normal', 'summary');
+        }
+      }, 3000);
+    }
   }
 
   _onKickoff(d) {
+    // Generate context narrative if available
+    const ctx = this.matchContext.get(d.matchId);
+    let contextText = '';
+    if (ctx?.narrative) {
+      contextText = ' ' + ctx.narrative;
+    }
     this._emit(d.matchId,
-      `🟢 TIẾNG CÒI KHAI CUỘC! ${d.home} vs ${d.away} (${d.league}). Trận đấu bắt đầu!`,
+      `🟢 TIẾNG CÒI KHAI CUỘC! ${d.home} vs ${d.away} (${d.league}). Trận đấu bắt đầu!${contextText}`,
       'normal', 'kickoff');
+    // Track incidents for smart summary
+    this.matchIncidentSummary.set(d.matchId, { goals: 0, cards: 0, redCards: 0, subs: 0, penalties: 0, keyMoments: [] });
+  }
+
+  setMatchContext(matchId, context) {
+    this.matchContext.set(matchId, context);
   }
 
   _onVar(d) {
@@ -146,6 +215,10 @@ class CommentaryEngine {
     this._emit(d.matchId,
       `🔄 ${d.team}: ${d.playerIn} ↔ ${d.playerOut} (${d.minute}')`,
       'low', 'substitution');
+
+    // Track for smart summary
+    const summary = this.matchIncidentSummary.get(d.matchId);
+    if (summary) summary.subs++;
   }
 
   // ═══════════════════════════════════════
@@ -253,6 +326,8 @@ class CommentaryEngine {
     setTimeout(() => {
       this.commentaryLog.delete(matchId);
       this.matchNarrative.delete(matchId);
+      this.matchContext.delete(matchId);
+      this.matchIncidentSummary.delete(matchId);
     }, 600000);
   }
 

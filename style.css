@@ -1,5 +1,5 @@
 /* ============================================
-   BongDa365 v3.0 - Sofascore-style Layout
+   BongDa365 v5.0 - Sofascore-style Layout
    Dark theme, data-dense design
    ============================================ */
 
@@ -492,3 +492,108 @@ a { color: inherit; text-decoration: none; }
 .wc-predict-btn:hover { border-color: var(--accent); background: var(--accent-glow); }
 .wc-predict-btn.selected { border-color: var(--accent); background: var(--accent-glow); box-shadow: 0 0 12px var(--accent-glow); }
 .wc-predict-result { margin-top: 12px; font-size: 14px; }
+
+/* ============================================
+   v5.0 — Match Personality Tags
+   ============================================ */
+.match-tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+.match-tag { display: inline-flex; align-items: center; gap: 3px; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); }
+.match-tag.tag-goals { background: rgba(239,68,68,0.15); color: var(--red); border-color: rgba(239,68,68,0.3); }
+.match-tag.tag-open { background: rgba(59,130,246,0.15); color: var(--blue); border-color: rgba(59,130,246,0.3); }
+.match-tag.tag-tense { background: rgba(245,158,11,0.15); color: var(--accent); border-color: rgba(245,158,11,0.3); }
+.match-tag.tag-tactical { background: rgba(139,92,246,0.15); color: var(--purple); border-color: rgba(139,92,246,0.3); }
+.match-tag.tag-attack { background: rgba(16,185,129,0.15); color: var(--green); border-color: rgba(16,185,129,0.3); }
+.match-tag.tag-physical { background: rgba(245,158,11,0.15); color: var(--accent); border-color: rgba(245,158,11,0.3); }
+
+/* ============================================
+   v5.0 — Team Form Row
+   ============================================ */
+.team-form-row { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 0; margin-top: 6px; }
+.team-form-side { display: flex; align-items: center; gap: 8px; }
+.team-form-side.away { flex-direction: row-reverse; }
+.team-form-name { font-size: 11px; color: var(--text-muted); font-weight: 600; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.form-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
+
+/* ============================================
+   v5.0 — AI Match Insight
+   ============================================ */
+.match-insight { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 12px; }
+.insight-header { font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 12px; }
+.insight-probs { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.insight-team { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+.insight-team.draw { flex: 0.6; }
+.insight-team img { height: 24px; width: 24px; }
+.insight-team span { font-size: 11px; color: var(--text-secondary); }
+.insight-pct { font-size: 22px; font-weight: 800; }
+.insight-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+.insight-bar-home { background: var(--blue); }
+.insight-bar-draw { background: var(--text-muted); }
+.insight-bar-away { background: var(--red); }
+.insight-verdict { text-align: center; font-size: 13px; color: var(--text-primary); margin-bottom: 10px; padding: 6px; background: var(--bg-primary); border-radius: var(--radius); }
+.insight-factors { display: flex; flex-direction: column; gap: 4px; }
+.insight-factor { font-size: 12px; color: var(--text-secondary); padding: 3px 0; border-bottom: 1px solid var(--border); }
+.insight-factor:last-child { border-bottom: none; }
+
+/* ============================================
+   v5.0 — Live Match Timeline
+   ============================================ */
+.timeline-svg { width: 100%; height: auto; display: block; }
+
+/* ============================================
+   v5.0 — Recommendations
+   ============================================ */
+.recommendations-section { margin-bottom: 16px; }
+.rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-top: 8px; }
+.rec-card { display: block; background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-hover) 100%); border: 1px solid var(--accent); border-radius: var(--radius); padding: 12px; text-decoration: none; color: var(--text-primary); transition: var(--transition); }
+.rec-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(245,158,11,0.2); }
+.rec-teams { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; justify-content: center; }
+.rec-teams img { height: 18px; width: 18px; }
+.rec-score { font-size: 16px; font-weight: 800; color: var(--accent); margin: 0 4px; }
+.rec-meta { display: flex; align-items: center; gap: 6px; margin-top: 6px; justify-content: center; flex-wrap: wrap; }
+.rec-meta .match-tags { margin-top: 0; }
+
+/* ============================================
+   v5.0 — Mood Filter
+   ============================================ */
+.filter-sep { color: var(--border); margin: 0 2px; }
+.mood-btn { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 14px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-family: inherit; transition: var(--transition); }
+.mood-btn:hover { border-color: var(--accent); color: var(--accent); }
+.mood-btn.active { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* ============================================
+   v5.0 — Shotmap Legend
+   ============================================ */
+.shotmap-legend { display: flex; gap: 16px; justify-content: center; margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+.shotmap-legend-item { display: flex; align-items: center; gap: 4px; }
+.shotmap-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+
+/* ============================================
+   v5.0 — Best Players Enhanced
+   ============================================ */
+.best-players-side { margin-bottom: 12px; }
+.best-players-team { font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+
+/* ============================================
+   v5.0 — Leaderboard
+   ============================================ */
+.leaderboard-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.leaderboard-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--card-bg); border-radius: 8px; font-size: 13px; }
+.leaderboard-item.is-me { border: 1px solid var(--accent); background: var(--accent-glow); }
+.lb-rank { font-size: 16px; min-width: 28px; text-align: center; }
+.lb-user { flex: 1; font-weight: 600; color: var(--text); }
+.lb-score { font-weight: 700; color: var(--accent); }
+.lb-stats { font-size: 11px; color: var(--text-muted); }
+
+/* Responsive — mood filters wrap on mobile */
+@media (max-width: 768px) {
+  .filter-bar { flex-wrap: wrap; }
+  .filter-sep { display: none; }
+  .mood-btn { font-size: 10px; padding: 3px 8px; }
+  .rec-grid { grid-template-columns: 1fr; }
+  .team-form-row { gap: 8px; }
+  .team-form-name { max-width: 60px; font-size: 10px; }
+  .insight-pct { font-size: 18px; }
+  .insight-probs img { height: 20px; width: 20px; }
+  .shotmap-legend { flex-wrap: wrap; gap: 8px; }
+  .leaderboard-item { font-size: 12px; padding: 6px 10px; }
+}

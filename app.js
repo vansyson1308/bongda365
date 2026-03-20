@@ -1,5 +1,6 @@
-// BongDa365 v3.0 - Sofascore-style SPA, 100% real data, Vietnamese
+// BongDa365 v5.0 - Sofascore-style SPA, 100% real data, Vietnamese
 // Architecture: Router → Page handlers → API → Render
+// Features: AI Insight, Timeline, Form, Tags, Recommendations, Mood Mode
 
 const app = {
   tickerTimer: null,
@@ -123,7 +124,12 @@ const app = {
         <button class="filter-btn active" data-filter="live" onclick="app.filterLive('live',this)">🔴 Live</button>
         <button class="filter-btn" data-filter="all" onclick="app.filterLive('all',this)">Tất cả</button>
         <button class="filter-btn" data-filter="fav" onclick="app.filterLive('fav',this)">★ Yêu thích</button>
+        <span class="filter-sep">|</span>
+        <button class="mood-btn" onclick="app.filterMood('goals',this)">🔥 Nhiều bàn</button>
+        <button class="mood-btn" onclick="app.filterMood('tactical',this)">🧠 Chiến thuật</button>
+        <button class="mood-btn" onclick="app.filterMood('entertainment',this)">🎯 Giải trí</button>
       </div>
+      <div id="liveRecommendations"></div>
       <div id="liveMatches"><div class="loading-state"><div class="spinner"></div></div></div>`;
     this._renderDateStrip(0);
     await this._loadLive();
@@ -188,8 +194,16 @@ const app = {
     let matches = this.liveMatches;
     if (this._liveFilter === 'live') matches = matches.filter(m => m.status === 'LIVE');
     else if (this._liveFilter === 'fav') matches = matches.filter(m => favourites.hasLeague(m.league.id) || favourites.hasTeam(m.home.id) || favourites.hasTeam(m.away.id));
+    // Apply mood filter
+    if (this._currentMood) matches = matches.filter(m => this._matchesMood(m, this._currentMood));
 
-    if (!matches.length) { el.innerHTML = this._empty('😴', this._liveFilter === 'fav' ? 'Không có trận yêu thích. Thêm ★ vào giải đấu!' : 'Không có trận nào.'); return; }
+    // Render recommendations
+    const recEl = document.getElementById('liveRecommendations');
+    if (recEl && !this._currentMood && this._liveFilter === 'live') {
+      recEl.innerHTML = this._renderRecommendations(this.liveMatches);
+    } else if (recEl) { recEl.innerHTML = ''; }
+
+    if (!matches.length) { el.innerHTML = this._empty('😴', this._liveFilter === 'fav' ? 'Không có trận yêu thích. Thêm ★ vào giải đấu!' : this._currentMood ? 'Không có trận phù hợp mood này.' : 'Không có trận nào.'); return; }
 
     const groups = this._groupByLeague(matches);
     let html = '';
@@ -303,7 +317,20 @@ const app = {
         } catch {}
       }
 
-      el.innerHTML = this._matchPage(match, stats, incidents, lineups, odds, h2h, graph, shotmap, bestPlayers, avgPositions);
+      // Fetch team form data
+      let homeForm = [], awayForm = [];
+      if (match) {
+        try {
+          const [hFormData, aFormData] = await Promise.all([
+            api.getTeamLastMatches(match.home.id, 0).catch(() => ({ events: [] })),
+            api.getTeamLastMatches(match.away.id, 0).catch(() => ({ events: [] })),
+          ]);
+          homeForm = this._computeForm(hFormData.events, match.home.id);
+          awayForm = this._computeForm(aFormData.events, match.away.id);
+        } catch {}
+      }
+
+      el.innerHTML = this._matchPage(match, stats, incidents, lineups, odds, h2h, graph, shotmap, bestPlayers, avgPositions, homeForm, awayForm);
 
       // Update title with match names
       if (match) this.setTitle(`${match.home.name} vs ${match.away.name}`);
@@ -331,12 +358,15 @@ const app = {
     } catch (e) { console.error(e); el.innerHTML = this._err('Lỗi tải chi tiết trận đấu'); }
   },
 
-  _matchPage(m, stats, incidents, lineups, odds, h2h, graph, shotmap, bestPlayers, avgPositions) {
+  _matchPage(m, stats, incidents, lineups, odds, h2h, graph, shotmap, bestPlayers, avgPositions, homeForm, awayForm) {
+    homeForm = homeForm || [];
+    awayForm = awayForm || [];
     let html = '';
 
     // Header
     if (m) {
       const live = m.status === 'LIVE';
+      const tags = this._classifyMatch(stats, m, incidents);
       html += `<div class="match-header-page">
         <div class="match-header-league">
           <img src="${m.league.logo}" class="league-icon" onerror="this.style.display='none'">
@@ -358,12 +388,15 @@ const app = {
             <a href="#/team/${m.away.id}" class="team-name-lg">${m.away.name}</a>
           </div>
         </div>
+        ${tags.length ? this._renderMatchTags(tags) : ''}
+        ${(homeForm.length || awayForm.length) ? this._renderTeamForm(homeForm, awayForm, m.home.short, m.away.short) : ''}
       </div>`;
     }
 
     // Tabs
     const tabs = [
       { id: 'summary', label: 'Tổng quan', show: true },
+      { id: 'timeline', label: 'Timeline', show: incidents.length > 0 },
       { id: 'stats', label: 'Thống kê', show: stats.length > 0 },
       { id: 'lineups', label: 'Đội hình', show: !!(lineups?.home) },
       { id: 'shotmap', label: 'Sút', show: !!(shotmap?.shotmap?.length) },
@@ -375,15 +408,22 @@ const app = {
       `<button class="tab-btn ${i === 0 ? 'active' : ''}" onclick="app._matchTab(this,'mtab-${t.id}')">${t.label}</button>`
     ).join('')}</div>`;
 
-    // Summary tab (incidents + momentum + best players + avg positions)
+    // Summary tab — AI Insight + incidents + best players + avg positions
     html += `<div id="mtab-summary" class="tab-panel">`;
+    html += this._renderMatchInsight(m, h2h, odds, stats, homeForm, awayForm, bestPlayers);
     html += this._renderIncidents(incidents);
-    if (graph?.graphPoints?.length) html += this._renderMomentum(graph.graphPoints, m);
     if (bestPlayers) html += this._renderBestPlayers(bestPlayers, m);
     if (avgPositions) html += this._renderAvgPositions(avgPositions, m);
     // Prediction game section
     html += '<div id="predGameSection"></div>';
     html += '</div>';
+
+    // Timeline tab
+    if (incidents.length) {
+      html += `<div id="mtab-timeline" class="tab-panel" style="display:none">`;
+      html += this._renderTimeline(incidents, graph, m);
+      html += '</div>';
+    }
 
     // Stats tab
     if (stats.length) {
@@ -518,18 +558,45 @@ const app = {
     const homeBest = bp.bestHomeTeamPlayer || bp.home;
     const awayBest = bp.bestAwayTeamPlayer || bp.away;
     if (!homeBest?.player && !awayBest?.player) return '';
-    let html = '<div class="section-block"><div class="section-label">Cầu thủ nổi bật</div><div class="best-players-row">';
-    if (homeBest?.player) {
-      html += `<a href="#/player/${homeBest.player.id}" class="best-player-card">
-        <img src="${api.playerImg(homeBest.player.id)}" onerror="this.style.display='none'">
-        <div><div class="player-name">${homeBest.player.shortName}</div><div class="player-rating">${parseFloat(homeBest.value).toFixed(1)}</div></div></a>`;
-    }
-    if (awayBest?.player) {
-      html += `<a href="#/player/${awayBest.player.id}" class="best-player-card">
-        <img src="${api.playerImg(awayBest.player.id)}" onerror="this.style.display='none'">
-        <div><div class="player-name">${awayBest.player.shortName}</div><div class="player-rating">${parseFloat(awayBest.value).toFixed(1)}</div></div></a>`;
-    }
-    return html + '</div></div>';
+    let html = '<div class="section-block"><div class="section-label">Cầu thủ nổi bật</div>';
+
+    // Get top 3 players per team from lineups if available
+    const renderPlayerCard = (p, side) => {
+      if (!p?.player) return '';
+      const rating = parseFloat(p.value || 0);
+      const rColor = rating >= 7.5 ? 'var(--green)' : rating >= 6.5 ? 'var(--accent)' : 'var(--text-muted)';
+      return `<a href="#/player/${p.player.id}" class="best-player-card">
+        <img src="${api.playerImg(p.player.id)}" onerror="this.style.display='none'">
+        <div><div class="player-name">${p.player.shortName}</div>
+        <div class="player-rating" style="color:${rColor}">${rating.toFixed(1)}</div></div></a>`;
+    };
+
+    html += `<div class="best-players-side"><div class="best-players-team text-blue">${m?.home?.short || 'Chủ'}</div><div class="best-players-row">`;
+    // Show up to 3 home players
+    const homePlayers = [homeBest];
+    if (bp.bestHomeTeamPlayers) homePlayers.push(...bp.bestHomeTeamPlayers.slice(0, 2));
+    const seenHome = new Set();
+    homePlayers.forEach(p => {
+      if (p?.player?.id && !seenHome.has(p.player.id) && seenHome.size < 3) {
+        seenHome.add(p.player.id);
+        html += renderPlayerCard(p, 'home');
+      }
+    });
+    html += '</div></div>';
+
+    html += `<div class="best-players-side"><div class="best-players-team text-red">${m?.away?.short || 'Khách'}</div><div class="best-players-row">`;
+    const awayPlayers = [awayBest];
+    if (bp.bestAwayTeamPlayers) awayPlayers.push(...bp.bestAwayTeamPlayers.slice(0, 2));
+    const seenAway = new Set();
+    awayPlayers.forEach(p => {
+      if (p?.player?.id && !seenAway.has(p.player.id) && seenAway.size < 3) {
+        seenAway.add(p.player.id);
+        html += renderPlayerCard(p, 'away');
+      }
+    });
+    html += '</div></div>';
+
+    return html + '</div>';
   },
 
   _renderAvgPositions(data, m) {
@@ -636,9 +703,17 @@ const app = {
   _pitchDot(x, y, p, color) {
     const num = p?.player?.jerseyNumber || '';
     const name = (p?.player?.shortName || '').split(' ').pop();
-    return `<circle cx="${x}" cy="${y}" r="14" fill="${color}" opacity="0.9" stroke="white" stroke-width="1.5"/>
+    const rating = p?.statistics?.rating ? parseFloat(p.statistics.rating) : 0;
+    // Rating color-coding: green >7.5, yellow >6.5, red <6, default = team color
+    let rColor = color;
+    if (rating >= 7.5) rColor = '#22c55e';
+    else if (rating >= 6.5) rColor = '#f59e0b';
+    else if (rating > 0 && rating < 6) rColor = '#ef4444';
+    const ratingText = rating > 0 ? `<text x="${x}" y="${y - 18}" font-size="9" font-weight="600" fill="${rColor}" text-anchor="middle">${rating.toFixed(1)}</text>` : '';
+    return `<circle cx="${x}" cy="${y}" r="14" fill="${color}" opacity="0.9" stroke="${rating >= 7.5 ? '#22c55e' : 'white'}" stroke-width="${rating >= 7.5 ? 2.5 : 1.5}"/>
       <text x="${x}" y="${y + 4}" font-size="10" font-weight="700" fill="white" text-anchor="middle">${num}</text>
-      <text x="${x}" y="${y + 25}" font-size="8" fill="white" text-anchor="middle">${name}</text>`;
+      <text x="${x}" y="${y + 25}" font-size="8" fill="white" text-anchor="middle">${name}</text>
+      ${ratingText}`;
   },
 
   _renderShotmap(shots, m) {
@@ -658,9 +733,18 @@ const app = {
         <title>${s.player?.shortName || ''} ${s.time}' xG:${(s.xg || 0).toFixed(2)}</title></circle>`;
     });
     const homeS = shots.filter(s => s.isHome), awayS = shots.filter(s => !s.isHome);
+    const homeGoals = homeS.filter(s => s.shotType === 'goal').length;
+    const awayGoals = awayS.filter(s => s.shotType === 'goal').length;
+    const homeOnTarget = homeS.filter(s => s.shotType === 'save' || s.shotType === 'goal').length;
+    const awayOnTarget = awayS.filter(s => s.shotType === 'save' || s.shotType === 'goal').length;
     return `<div class="section-label"><span class="text-blue">${m?.home?.short || ''}: ${homeS.length} sút (xG: ${homeS.reduce((s, x) => s + (x.xg || 0), 0).toFixed(2)})</span>
       <span class="text-red">${m?.away?.short || ''}: ${awayS.length} sút (xG: ${awayS.reduce((s, x) => s + (x.xg || 0), 0).toFixed(2)})</span></div>
-      <svg viewBox="0 0 ${w} ${h}" class="shotmap-svg">${svg}</svg>`;
+      <svg viewBox="0 0 ${w} ${h}" class="shotmap-svg">${svg}</svg>
+      <div class="shotmap-legend">
+        <span class="shotmap-legend-item"><span class="shotmap-dot" style="background:var(--accent);border:2px solid white"></span> Bàn thắng (${homeGoals + awayGoals})</span>
+        <span class="shotmap-legend-item"><span class="shotmap-dot" style="background:var(--blue)"></span> Trúng đích (${homeOnTarget + awayOnTarget})</span>
+        <span class="shotmap-legend-item"><span class="shotmap-dot" style="background:var(--text-muted);opacity:0.6"></span> Không trúng</span>
+      </div>`;
   },
 
   _renderH2H(h2h, m) {
@@ -997,7 +1081,7 @@ const app = {
     this.setTitle('Dự Đoán & Phân Tích AI');
     this.showPanel(false);
     const el = document.getElementById('page-content');
-    el.innerHTML = '<div class="page-header"><h2>🎯 Dự Đoán & Phân Tích</h2></div><div id="predContent"><div class="loading-state"><div class="spinner"></div><p>Đang phân tích...</p></div></div>';
+    el.innerHTML = '<div class="page-header"><h2>🎯 Dự Đoán & Phân Tích</h2></div><div id="predLeaderboard"></div><div id="predContent"><div class="loading-state"><div class="spinner"></div><p>Đang phân tích...</p></div></div>';
 
     try {
       const today = new Date().toISOString().split('T')[0];
@@ -1031,7 +1115,29 @@ const app = {
       await Promise.all(fetches);
 
       document.getElementById('predContent').innerHTML = upcoming.map(m => this._predCard(m, sMap, tsMap)).join('');
+      // Add leaderboard section
+      if (typeof chat !== 'undefined' && chat.socket) {
+        chat.socket.emit('get_leaderboard');
+      }
     } catch (e) { console.error(e); document.getElementById('predContent').innerHTML = this._err('Lỗi tải dự đoán'); }
+  },
+
+  _renderLeaderboard(data) {
+    const lbEl = document.getElementById('predLeaderboard');
+    if (!lbEl || !data?.leaderboard?.length) return;
+    let html = '<div class="section-label">🏆 Bảng Xếp Hạng Dự Đoán</div><div class="leaderboard-list">';
+    data.leaderboard.forEach((entry, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+      const isMe = entry.user === (predGame?.username || '');
+      html += `<div class="leaderboard-item ${isMe ? 'is-me' : ''}">
+        <span class="lb-rank">${medal}</span>
+        <span class="lb-user">${entry.user}</span>
+        <span class="lb-score">${entry.score} điểm</span>
+        <span class="lb-stats">${entry.exact || 0}🎯 ${entry.correct || 0}✅</span>
+      </div>`;
+    });
+    html += '</div>';
+    lbEl.innerHTML = html;
   },
 
   _predCard(m, sMap, tsMap) {
@@ -1142,6 +1248,326 @@ const app = {
   _updateLiveCount(matches) {
     const el = document.getElementById('liveCount');
     if (el) el.textContent = matches.filter(m => m.status === 'LIVE').length;
+  },
+
+  // ═══════════════════════════════════════
+  //  MATCH PERSONALITY TAGS
+  // ═══════════════════════════════════════
+  _classifyMatch(stats, match, incidents) {
+    const tags = [];
+    if (!match) return tags;
+    const totalGoals = (match.homeScore || 0) + (match.awayScore || 0);
+    const bothScored = (match.homeScore || 0) > 0 && (match.awayScore || 0) > 0;
+    const isTied = match.homeScore === match.awayScore && match.status === 'LIVE';
+
+    if (totalGoals >= 4) tags.push({ icon: '🔥', label: 'Mưa bàn thắng', cls: 'tag-goals' });
+    if (bothScored) tags.push({ icon: '🎯', label: 'Mở', cls: 'tag-open' });
+    if (isTied && match.minute > 75) tags.push({ icon: '😰', label: 'Kịch tính', cls: 'tag-tense' });
+
+    if (stats && stats.length) {
+      const poss = stats.find(s => (s.name || '').toLowerCase().includes('possession'));
+      if (poss) {
+        const h = parseFloat(String(poss.home || poss.hv || 0).replace('%', ''));
+        const a = parseFloat(String(poss.away || poss.av || 0).replace('%', ''));
+        if (Math.abs(h - a) >= 25) tags.push({ icon: '🧠', label: 'Chiến thuật', cls: 'tag-tactical' });
+      }
+      const totalShots = stats.filter(s => (s.name || '').toLowerCase() === 'total shots')
+        .reduce((sum, s) => sum + (parseInt(s.home) || 0) + (parseInt(s.away) || 0), 0);
+      if (totalShots >= 30) tags.push({ icon: '⚡', label: 'Tấn công', cls: 'tag-attack' });
+    }
+
+    const totalCards = (incidents || []).filter(i => i.incidentType === 'card').length;
+    if (totalCards >= 6) tags.push({ icon: '💪', label: 'Thể lực', cls: 'tag-physical' });
+
+    return tags.slice(0, 3); // max 3 tags
+  },
+
+  _renderMatchTags(tags) {
+    if (!tags.length) return '';
+    return `<div class="match-tags">${tags.map(t =>
+      `<span class="match-tag ${t.cls}">${t.icon} ${t.label}</span>`
+    ).join('')}</div>`;
+  },
+
+  // ═══════════════════════════════════════
+  //  TEAM FORM (Last 5 Matches)
+  // ═══════════════════════════════════════
+  _computeForm(events, teamId) {
+    return (events || []).slice(0, 5).map(e => {
+      const isHome = e.homeTeam?.id === teamId;
+      const hs = e.homeScore?.current, as = e.awayScore?.current;
+      if (hs == null || as == null) return null;
+      return (isHome && hs > as) || (!isHome && as > hs) ? 'W' : hs === as ? 'D' : 'L';
+    }).filter(Boolean);
+  },
+
+  _renderTeamForm(homeForm, awayForm, homeName, awayName) {
+    const badge = f => `<span class="form-badge ${f}">${f === 'W' ? 'T' : f === 'D' ? 'H' : 'B'}</span>`;
+    return `<div class="team-form-row">
+      <div class="team-form-side">
+        <span class="team-form-name">${homeName}</span>
+        <div class="form-badges">${homeForm.map(badge).join('')}</div>
+      </div>
+      <span class="form-label">PHONG ĐỘ</span>
+      <div class="team-form-side away">
+        <div class="form-badges">${awayForm.map(badge).join('')}</div>
+        <span class="team-form-name">${awayName}</span>
+      </div>
+    </div>`;
+  },
+
+  // ═══════════════════════════════════════
+  //  AI MATCH INSIGHT
+  // ═══════════════════════════════════════
+  _renderMatchInsight(match, h2h, odds, stats, homeForm, awayForm, bestPlayers) {
+    if (!match) return '';
+    let dataSources = 0;
+
+    // Base probability
+    let hp = 40, dp = 25, ap = 35;
+
+    // Home advantage
+    hp += 5; ap -= 5;
+
+    // Form factor
+    if (homeForm.length >= 3) {
+      dataSources++;
+      const hWins = homeForm.filter(f => f === 'W').length;
+      const aWins = awayForm.filter(f => f === 'W').length;
+      hp += (hWins - 2.5) * 4;
+      ap += (aWins - 2.5) * 4;
+    }
+
+    // H2H factor
+    const td = h2h?.teamDuel;
+    let h2hFactors = [];
+    if (td && (td.homeWins + td.draws + td.awayWins) >= 3) {
+      dataSources++;
+      const total = td.homeWins + td.draws + td.awayWins;
+      const hRate = td.homeWins / total;
+      const aRate = td.awayWins / total;
+      hp += (hRate - 0.4) * 20;
+      ap += (aRate - 0.35) * 20;
+      h2hFactors = [td.homeWins, td.draws, td.awayWins, total];
+    }
+
+    // Odds factor
+    let oddsText = '';
+    if (odds && odds.length) {
+      const m1x2 = odds.find(o => o.marketName === 'Full time' || o.marketName === '1X2');
+      if (m1x2?.choices?.length === 3) {
+        dataSources++;
+        const c = m1x2.choices;
+        const implied = c.map(ch => {
+          const f = ch.fractionalValue;
+          if (!f) return 33;
+          const p = f.split('/');
+          return p.length === 2 ? 100 / (parseInt(p[0]) / parseInt(p[1]) + 1) : 33;
+        });
+        const iTotal = implied.reduce((s, v) => s + v, 0);
+        const norm = implied.map(v => v / iTotal * 100);
+        // Blend 50/50 with rule-based
+        hp = (hp + norm[0]) / 2;
+        dp = (dp + norm[1]) / 2;
+        ap = (ap + norm[2]) / 2;
+        oddsText = c.map(ch => `${ch.name}: ${this._frac(ch.fractionalValue)}`).join(' | ');
+      }
+    }
+
+    // Normalize
+    const sum = hp + dp + ap;
+    hp = Math.round(hp / sum * 100);
+    ap = Math.round(ap / sum * 100);
+    dp = 100 - hp - ap;
+    if (dp < 8) { dp = 8; const r = 92 / (hp + ap || 1); hp = Math.round(hp * r); ap = 92 - hp; }
+
+    if (dataSources < 1) return '';
+
+    // Key factors
+    const factors = [];
+    factors.push(`🏟️ ${match.home.short} có lợi thế sân nhà`);
+    if (homeForm.length >= 3) {
+      const hW = homeForm.filter(f => f === 'W').length;
+      const aW = awayForm.filter(f => f === 'W').length;
+      if (hW >= 3) factors.push(`📈 ${match.home.short} thắng ${hW}/${homeForm.length} trận gần đây`);
+      if (aW >= 3) factors.push(`📈 ${match.away.short} thắng ${aW}/${awayForm.length} trận gần đây`);
+      if (hW <= 1) factors.push(`📉 ${match.home.short} phong độ kém (${hW} thắng/${homeForm.length} trận)`);
+      if (aW <= 1) factors.push(`📉 ${match.away.short} phong độ kém (${aW} thắng/${awayForm.length} trận)`);
+    }
+    if (h2hFactors.length) {
+      factors.push(`⚔️ Đối đầu: ${match.home.short} ${h2hFactors[0]}-${h2hFactors[1]}-${h2hFactors[2]} ${match.away.short} (${h2hFactors[3]} trận)`);
+    }
+    if (bestPlayers) {
+      const hBest = bestPlayers.bestHomeTeamPlayer || bestPlayers.home;
+      const aBest = bestPlayers.bestAwayTeamPlayer || bestPlayers.away;
+      if (hBest?.player && parseFloat(hBest.value) >= 7.5) factors.push(`⭐ ${hBest.player.shortName} phong độ cao (${parseFloat(hBest.value).toFixed(1)})`);
+      if (aBest?.player && parseFloat(aBest.value) >= 7.5) factors.push(`⭐ ${aBest.player.shortName} phong độ cao (${parseFloat(aBest.value).toFixed(1)})`);
+    }
+
+    const winner = hp > ap ? match.home.short : ap > hp ? match.away.short : 'Hòa';
+    const winProb = Math.max(hp, ap, dp);
+
+    return `<div class="match-insight">
+      <div class="insight-header">🤖 AI Match Insight</div>
+      <div class="insight-probs">
+        <div class="insight-team">
+          <img src="${match.home.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+          <span>${match.home.short}</span>
+          <div class="insight-pct text-blue">${hp}%</div>
+        </div>
+        <div class="insight-team draw">
+          <span>Hòa</span>
+          <div class="insight-pct">${dp}%</div>
+        </div>
+        <div class="insight-team">
+          <img src="${match.away.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+          <span>${match.away.short}</span>
+          <div class="insight-pct text-red">${ap}%</div>
+        </div>
+      </div>
+      <div class="insight-bar">
+        <div class="insight-bar-home" style="width:${hp}%"></div>
+        <div class="insight-bar-draw" style="width:${dp}%"></div>
+        <div class="insight-bar-away" style="width:${ap}%"></div>
+      </div>
+      <div class="insight-verdict">🏆 Dự đoán: <strong>${winner}</strong> (${winProb}%)</div>
+      <div class="insight-factors">
+        ${factors.slice(0, 5).map(f => `<div class="insight-factor">${f}</div>`).join('')}
+      </div>
+    </div>`;
+  },
+
+  // ═══════════════════════════════════════
+  //  LIVE MATCH TIMELINE
+  // ═══════════════════════════════════════
+  _renderTimeline(incidents, graph, match) {
+    if (!incidents.length && !graph?.graphPoints?.length) return '<div class="empty-state"><div class="icon">📋</div><p>Chưa có diễn biến</p></div>';
+    const maxMin = match?.minute || 90;
+    const w = 640, h = 200, pad = 40, trackY = h / 2;
+    const xScale = (w - pad * 2) / Math.max(maxMin, 45);
+
+    let svg = '';
+    // Track line
+    svg += `<line x1="${pad}" y1="${trackY}" x2="${w - pad}" y2="${trackY}" stroke="var(--border)" stroke-width="2"/>`;
+    // Minute markers
+    for (let m = 0; m <= maxMin; m += 15) {
+      const x = pad + m * xScale;
+      svg += `<line x1="${x}" y1="${trackY - 5}" x2="${x}" y2="${trackY + 5}" stroke="var(--text-muted)" stroke-width="1"/>`;
+      svg += `<text x="${x}" y="${h - 5}" fill="var(--text-muted)" font-size="9" text-anchor="middle">${m}'</text>`;
+    }
+    // HT marker
+    if (maxMin > 45) {
+      const htX = pad + 45 * xScale;
+      svg += `<line x1="${htX}" y1="15" x2="${htX}" y2="${h - 15}" stroke="var(--border)" stroke-dasharray="3"/>`;
+      svg += `<text x="${htX}" y="12" fill="var(--text-muted)" font-size="9" text-anchor="middle">HT</text>`;
+    }
+
+    // Event markers
+    incidents.forEach(inc => {
+      const x = pad + Math.min(inc.time, maxMin) * xScale;
+      const isHome = inc.isHome;
+      const yOffset = isHome ? -25 : 25;
+      const textY = isHome ? trackY - 45 : trackY + 55;
+
+      if (inc.incidentType === 'goal') {
+        const r = 10;
+        svg += `<circle cx="${x}" cy="${trackY + yOffset}" r="${r}" fill="var(--accent)" stroke="white" stroke-width="2"/>`;
+        svg += `<text x="${x}" y="${trackY + yOffset + 4}" fill="white" font-size="10" text-anchor="middle" font-weight="bold">⚽</text>`;
+        svg += `<text x="${x}" y="${textY}" fill="var(--text-primary)" font-size="8" text-anchor="middle">${inc.player?.shortName || ''}</text>`;
+      } else if (inc.incidentType === 'card') {
+        const color = inc.incidentClass === 'yellow' ? '#facc15' : '#ef4444';
+        svg += `<rect x="${x - 5}" y="${trackY + yOffset - 7}" width="10" height="14" rx="1" fill="${color}" stroke="white" stroke-width="1"/>`;
+      } else if (inc.incidentType === 'substitution') {
+        svg += `<text x="${x}" y="${trackY + yOffset + 4}" fill="var(--green)" font-size="12" text-anchor="middle">🔄</text>`;
+      } else if (inc.incidentType === 'varDecision') {
+        svg += `<text x="${x}" y="${trackY + yOffset + 4}" fill="var(--purple)" font-size="12" text-anchor="middle">📺</text>`;
+      }
+    });
+
+    // Team labels
+    svg += `<text x="${pad - 5}" y="${trackY - 25}" fill="var(--blue)" font-size="10" text-anchor="end">${match?.home?.short || ''}</text>`;
+    svg += `<text x="${pad - 5}" y="${trackY + 30}" fill="var(--red)" font-size="10" text-anchor="end">${match?.away?.short || ''}</text>`;
+
+    let html = `<div class="section-block">
+      <div class="section-label">⏱️ Diễn biến trận đấu</div>
+      <svg viewBox="0 0 ${w} ${h}" class="timeline-svg">${svg}</svg>
+    </div>`;
+
+    // Momentum bar (simplified from existing graph data)
+    if (graph?.graphPoints?.length) {
+      html += this._renderMomentum(graph.graphPoints, match);
+    }
+
+    return html;
+  },
+
+  // ═══════════════════════════════════════
+  //  MATCH RECOMMENDATIONS
+  // ═══════════════════════════════════════
+  _scoreMatchInterest(match) {
+    let score = 0;
+    // Favorite team/league bonus
+    if (favourites.hasLeague(match.league.id)) score += 30;
+    if (favourites.hasTeam(match.home.id) || favourites.hasTeam(match.away.id)) score += 50;
+    // Top league bonus
+    const topLeagues = CONFIG.LEAGUES.map(l => l.id);
+    if (topLeagues.includes(match.league.id)) score += 20;
+    // Live match bonus
+    if (match.status === 'LIVE') score += 15;
+    // Many goals = exciting
+    const goals = (match.homeScore || 0) + (match.awayScore || 0);
+    if (goals >= 3) score += goals * 5;
+    // Close match
+    if (match.status === 'LIVE' && match.homeScore === match.awayScore) score += 10;
+    return score;
+  },
+
+  _renderRecommendations(matches) {
+    const live = matches.filter(m => m.status === 'LIVE');
+    if (live.length < 3) return '';
+    const scored = live.map(m => ({ match: m, score: this._scoreMatchInterest(m) }))
+      .sort((a, b) => b.score - a.score).slice(0, 3);
+    if (scored[0].score < 20) return '';
+    return `<div class="recommendations-section">
+      <div class="section-label">🔥 Trận đáng xem</div>
+      <div class="rec-grid">${scored.map(s => {
+        const m = s.match;
+        const tags = this._classifyMatch([], m, []);
+        return `<a href="#/match/${m.id}" class="rec-card">
+          <div class="rec-teams">
+            <img src="${m.home.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+            <span>${m.home.short}</span>
+            <span class="rec-score">${m.homeScore}-${m.awayScore}</span>
+            <span>${m.away.short}</span>
+            <img src="${m.away.logo}" class="team-logo-sm" onerror="this.style.display='none'">
+          </div>
+          <div class="rec-meta">
+            <span class="status-live">${m.minute ? m.minute + "'" : 'LIVE'}</span>
+            ${tags.length ? this._renderMatchTags(tags) : ''}
+          </div>
+        </a>`;
+      }).join('')}</div>
+    </div>`;
+  },
+
+  // ═══════════════════════════════════════
+  //  MOOD FILTER
+  // ═══════════════════════════════════════
+  _currentMood: null,
+
+  filterMood(mood, btn) {
+    this._currentMood = this._currentMood === mood ? null : mood;
+    document.querySelectorAll('.mood-btn').forEach(b => b.classList.remove('active'));
+    if (this._currentMood && btn) btn.classList.add('active');
+    this._renderLiveMatches();
+  },
+
+  _matchesMood(match, mood) {
+    const goals = (match.homeScore || 0) + (match.awayScore || 0);
+    if (mood === 'goals') return goals >= 2 || match.status === 'NS';
+    if (mood === 'tactical') return match.status === 'LIVE' && goals <= 1;
+    if (mood === 'entertainment') return goals >= 3 || (match.homeScore !== match.awayScore && match.status === 'LIVE');
+    return true;
   },
 
   // ═══════════════════════════════════════
