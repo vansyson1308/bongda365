@@ -10,6 +10,7 @@ const bus = require('./event-bus');
 const detector = require('./event-detector');
 const commentary = require('./commentary-engine');
 const predictions = require('./prediction-engine');
+const newsEngine = require('./news-engine');
 
 const PORT = process.env.PORT || 3000;
 const POLL_MS = 5000;
@@ -126,6 +127,31 @@ function seoForPath(urlPath) {
       jsonLd: { '@context': 'https://schema.org', '@type': 'SportsEvent', name: 'FIFA World Cup 2026', startDate: '2026-06-11', endDate: '2026-07-19', location: { '@type': 'Place', name: 'USA, Mexico, Canada' }, sport: 'Football' },
     });
   }
+  // News listing
+  if (urlPath === '/news') {
+    const latest = newsEngine.getLatest(5);
+    const articleList = latest.map(a => `<h2><a href="${SITE_URL}/news/${a.id}">${a.titleVi || a.title}</a></h2><p>${a.summaryVi || a.summary}</p>`).join('');
+    return seoHTML({
+      title: 'Tin Tức Bóng Đá Mới Nhất | BongDa365',
+      desc: 'Cập nhật tin tức bóng đá mới nhất: chuyển nhượng, chấn thương, trước trận, kết quả. Premier League, La Liga, Serie A, V-League.',
+      url: '/news',
+      body: articleList,
+    });
+  }
+  // News article detail
+  const newsMatch = urlPath.match(/^\/news\/([a-z0-9-]+)$/);
+  if (newsMatch) {
+    const article = newsEngine.getArticle(newsMatch[1]);
+    if (article) {
+      return seoHTML({
+        title: `${article.titleVi || article.title} | BongDa365`,
+        desc: article.summaryVi || article.summary,
+        url: `/news/${article.id}`,
+        image: article.imageUrl,
+        jsonLd: { '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.titleVi || article.title, description: article.summaryVi || article.summary, image: article.imageUrl || '', datePublished: new Date(article.pubDate).toISOString(), publisher: { '@type': 'Organization', name: 'BongDa365' }, mainEntityOfPage: `${SITE_URL}/news/${article.id}` },
+      });
+    }
+  }
   return null; // Not a known SEO route
 }
 
@@ -150,6 +176,12 @@ function generateSitemap() {
   // Leagues
   for (const lg of leagues) {
     xml += `<url><loc>${SITE_URL}/league/${lg.id}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>\n`;
+  }
+  // News
+  xml += `<url><loc>${SITE_URL}/news</loc><changefreq>daily</changefreq><priority>0.8</priority><lastmod>${today}</lastmod></url>\n`;
+  const newsArticles = newsEngine.getLatest(50);
+  for (const a of newsArticles) {
+    xml += `<url><loc>${SITE_URL}/news/${a.id}</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>\n`;
   }
   // Live matches (dynamic)
   if (cachedLive) {
@@ -226,6 +258,27 @@ const server = http.createServer(async (req, res) => {
     const pred = predictions.get(matchId);
     res.writeHead(200, { 'Content-Type':'application/json; charset=utf-8' });
     res.end(JSON.stringify(pred));
+    return;
+  }
+
+  // News API
+  if (req.url.startsWith('/api/news')) {
+    const urlObj = new URL(req.url, `http://localhost:${PORT}`);
+    // Single article: /api/news/bbc-a1b2c3
+    const idMatch = req.url.match(/^\/api\/news\/([a-z0-9-]+)$/);
+    if (idMatch) {
+      const article = newsEngine.getArticle(idMatch[1]);
+      res.writeHead(article ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(article ? { article } : { error: 'not found' }));
+      return;
+    }
+    // List: /api/news?page=1&limit=20&category=transfers
+    const page = parseInt(urlObj.searchParams.get('page')) || 1;
+    const limit = Math.min(parseInt(urlObj.searchParams.get('limit')) || 20, 50);
+    const category = urlObj.searchParams.get('category') || null;
+    const result = newsEngine.getArticles({ page, limit, category });
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=60' });
+    res.end(JSON.stringify(result));
     return;
   }
 
@@ -759,6 +812,7 @@ setInterval(pollIncidents, INCIDENT_POLL_MS);
 setInterval(pollStats, STAT_POLL_MS);
 setInterval(pollOdds, 60000); // Odds change slowly, 60s is enough
 pollLive();
+newsEngine.start();
 
 // ── Start ──
 server.on('error', (err) => {

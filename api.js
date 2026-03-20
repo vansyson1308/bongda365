@@ -102,6 +102,29 @@ class SofaAPI {
     });
     return stats;
   }
+  // ── News API (not proxied through SofaScore) ──
+  async getNews(page, category) {
+    let url = `/api/news?page=${page || 1}&limit=20`;
+    if (category && category !== 'all') url += `&category=${category}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 60000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${res.status}`);
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
+
+  async getNewsArticle(id) {
+    const url = `/api/news/${id}`;
+    const c = this.cache.get(url);
+    if (c && Date.now() - c.ts < 60000) return c.data;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${res.status}`);
+    const json = await res.json();
+    this.cache.set(url, { data: json, ts: Date.now() });
+    return json;
+  }
 }
 
 const api = new SofaAPI();

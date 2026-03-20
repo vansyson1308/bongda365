@@ -86,6 +86,8 @@ const app = {
     router.register('/team/([^/]+)', (tid) => this.pageTeam(tid));
     router.register('/player/([^/]+)', (pid) => this.pagePlayer(pid));
     router.register('/predictions', () => this.pagePredictions());
+    router.register('/news', () => this.pageNews());
+    router.register('/news/([^/]+)', (id) => this.pageNewsDetail(id));
     router.register('/worldcup', () => this.pageWorldCup());
     router.register('/search', () => this.pageSearch());
   },
@@ -1226,6 +1228,160 @@ const app = {
       if (!html) html = this._empty('🔍', 'Không tìm thấy kết quả');
       document.getElementById('searchResults').innerHTML = html;
     } catch { document.getElementById('searchResults').innerHTML = this._err('Lỗi tìm kiếm'); }
+  },
+
+  // ═══════════════════════════════════════
+  //  NEWS PAGE
+  // ═══════════════════════════════════════
+  _newsCurrentPage: 1,
+  _newsCategory: null,
+
+  async pageNews() {
+    this.setTitle('Tin Tức Bóng Đá');
+    this.showPanel(false);
+    this._newsCurrentPage = 1;
+    this._newsCategory = null;
+    const el = document.getElementById('page-content');
+    el.innerHTML = `
+      <div class="page-header"><h2>📰 Tin Tức Bóng Đá</h2><p class="text-muted">Cập nhật tự động từ BBC Sport, ESPN, Sky Sports</p></div>
+      <div class="news-filter-bar" id="newsFilterBar">
+        <button class="filter-btn active" data-cat="all">Tất cả</button>
+        <button class="filter-btn" data-cat="transfers">Chuyển nhượng</button>
+        <button class="filter-btn" data-cat="injuries">Chấn thương</button>
+        <button class="filter-btn" data-cat="match-preview">Trước trận</button>
+        <button class="filter-btn" data-cat="match-review">Sau trận</button>
+        <button class="filter-btn" data-cat="general">Tổng hợp</button>
+      </div>
+      <div id="newsGrid" class="news-grid"><div class="loading-state"><div class="spinner"></div></div></div>
+      <div id="newsLoadMore" style="text-align:center;padding:20px;display:none">
+        <button class="btn-loadmore" id="btnLoadMore">Xem thêm</button>
+      </div>`;
+
+    // Filter buttons
+    document.getElementById('newsFilterBar').addEventListener('click', (e) => {
+      const btn = e.target.closest('.filter-btn');
+      if (!btn) return;
+      document.querySelectorAll('#newsFilterBar .filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      this._newsCategory = btn.dataset.cat === 'all' ? null : btn.dataset.cat;
+      this._newsCurrentPage = 1;
+      this._loadNews(false);
+    });
+
+    // Load more
+    document.getElementById('btnLoadMore').addEventListener('click', () => {
+      this._newsCurrentPage++;
+      this._loadNews(true);
+    });
+
+    this._loadNews(false);
+  },
+
+  async _loadNews(append) {
+    const grid = document.getElementById('newsGrid');
+    const loadMore = document.getElementById('newsLoadMore');
+    if (!append) grid.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+
+    try {
+      const data = await api.getNews(this._newsCurrentPage, this._newsCategory);
+      const articles = data.articles || [];
+
+      if (!append && articles.length === 0) {
+        grid.innerHTML = this._empty('📰', 'Chưa có tin tức. Hệ thống đang thu thập dữ liệu...');
+        loadMore.style.display = 'none';
+        return;
+      }
+
+      const html = articles.map(a => this._newsCard(a)).join('');
+      if (append) {
+        grid.insertAdjacentHTML('beforeend', html);
+      } else {
+        grid.innerHTML = html;
+      }
+
+      loadMore.style.display = this._newsCurrentPage < data.pages ? '' : 'none';
+    } catch (e) {
+      if (!append) grid.innerHTML = this._err('Lỗi tải tin tức');
+    }
+  },
+
+  _newsCard(a) {
+    const timeAgo = this._timeAgo(a.pubDate);
+    const catVi = { transfers: 'Chuyển nhượng', injuries: 'Chấn thương', 'match-preview': 'Trước trận', 'match-review': 'Sau trận', general: 'Tổng hợp' };
+    const imgStyle = a.imageUrl ? `background-image:url(${a.imageUrl})` : 'background:var(--bg-secondary)';
+    return `<a href="#/news/${a.id}" class="news-card">
+      <div class="news-card-img" style="${imgStyle}"></div>
+      <div class="news-card-body">
+        <span class="news-tag news-tag-${a.category}">${catVi[a.category] || 'Tổng hợp'}</span>
+        <h3 class="news-card-title">${a.titleVi || a.title}</h3>
+        <p class="news-card-summary">${a.summaryVi || a.summary}</p>
+        <div class="news-card-meta">
+          <span class="news-source">${a.source}</span>
+          <span class="news-time">${timeAgo}</span>
+        </div>
+      </div>
+    </a>`;
+  },
+
+  async pageNewsDetail(id) {
+    this.showPanel(false);
+    const el = document.getElementById('page-content');
+    el.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+
+    try {
+      const data = await api.getNewsArticle(id);
+      const a = data.article;
+      if (!a) { el.innerHTML = this._empty('📰', 'Không tìm thấy bài viết'); return; }
+
+      this.setTitle(a.titleVi || a.title);
+      const catVi = { transfers: 'Chuyển nhượng', injuries: 'Chấn thương', 'match-preview': 'Trước trận', 'match-review': 'Sau trận', general: 'Tổng hợp' };
+      const pubDate = new Date(a.pubDate).toLocaleDateString('vi-VN', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const leagueTags = (a.leagueTags || []).map(t => `<span class="news-league-tag">${t.replace(/-/g, ' ')}</span>`).join('');
+
+      el.innerHTML = `
+        <div class="news-detail">
+          <a href="#/news" class="news-back">&larr; Tất cả tin tức</a>
+          <span class="news-tag news-tag-${a.category}">${catVi[a.category] || 'Tổng hợp'}</span>
+          <h1 class="news-detail-title">${a.titleVi || a.title}</h1>
+          <div class="news-detail-meta">
+            <span class="news-source">${a.source}</span>
+            <span class="news-time">${pubDate}</span>
+          </div>
+          ${a.imageUrl ? `<img src="${a.imageUrl}" class="news-detail-img" onerror="this.style.display='none'" alt="${a.titleVi || a.title}">` : ''}
+          <p class="news-detail-summary">${a.summaryVi || a.summary}</p>
+          ${leagueTags ? `<div class="news-league-tags">${leagueTags}</div>` : ''}
+          <a href="${a.link}" target="_blank" rel="noopener noreferrer" class="news-read-original">Đọc bài gốc tại ${a.source} &rarr;</a>
+        </div>
+        <div class="news-related" id="newsRelated"></div>`;
+
+      // Load related articles
+      this._loadRelatedNews(a);
+    } catch (e) {
+      el.innerHTML = this._err('Lỗi tải bài viết');
+    }
+  },
+
+  async _loadRelatedNews(current) {
+    const container = document.getElementById('newsRelated');
+    if (!container) return;
+    try {
+      const data = await api.getNews(1, current.category);
+      const related = (data.articles || []).filter(a => a.id !== current.id).slice(0, 4);
+      if (related.length === 0) return;
+      container.innerHTML = `<h3 class="section-label">Tin liên quan</h3><div class="news-grid news-grid-related">${related.map(a => this._newsCard(a)).join('')}</div>`;
+    } catch {}
+  },
+
+  _timeAgo(ts) {
+    const diff = Date.now() - ts;
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'Vừa xong';
+    if (mins < 60) return `${mins} phút trước`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} giờ trước`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days} ngày trước`;
+    return new Date(ts).toLocaleDateString('vi-VN');
   },
 
   // ═══════════════════════════════════════
