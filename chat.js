@@ -109,14 +109,17 @@ const chat = {
     const v = (key) => p[key] ?? 50; // Default 50 if missing
     const row = (label, key, color) =>
       `<div class="pred-bar-row"><span class="pred-label">${label}</span><div class="pred-bar"><div class="pred-fill ${color}" style="width:${v(key)}%"></div></div><span class="pred-pct">${v(key)}%</span></div>`;
+    const gl = p.goalLine || 2.5;
+    const cl = p.cornerLine || 8.5;
+    const cdl = p.cardLine || 3.5;
     el.innerHTML =
       row('Chủ thắng', 'homeWin', 'blue') +
       row('Hòa', 'draw', 'gray') +
       row('Khách thắng', 'awayWin', 'red') +
-      row('Tài 2.5', 'over25', 'green') +
+      row(`Trên ${gl} bàn`, 'overGoals', 'green') +
       row('BTTS', 'btts', 'orange') +
-      row('Góc T8.5', 'cornersOver85', 'purple') +
-      row('Thẻ T3.5', 'cardsOver35', 'yellow');
+      row(`Trên ${cl} góc`, 'overCorners', 'purple') +
+      row(`Trên ${cdl} thẻ`, 'overCards', 'yellow');
   },
 
   showReaction(emoji) {

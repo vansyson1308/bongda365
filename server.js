@@ -113,7 +113,7 @@ function seoForPath(urlPath) {
   if (urlPath === '/predictions') {
     return seoHTML({
       title: 'Dự Đoán Bóng Đá AI - Xác Suất Real-Time | BongDa365',
-      desc: 'Dự đoán tỉ số bóng đá bằng AI Ngựa Tiên Tri. Xác suất thắng/thua/hòa, tài/xỉu, BTTS cập nhật real-time.',
+      desc: 'Dự đoán tỉ số bóng đá bằng AI Ngựa Tiên Tri. Xác suất thắng/thua/hòa, tổng bàn thắng, BTTS cập nhật real-time.',
       url: '/predictions',
     });
   }
@@ -623,10 +623,77 @@ async function pollStats() {
   }
 }
 
+// ── Odds Polling — fetch dynamic over/under lines from bookmakers ──
+let oddsIdx = 0;
+const matchLines = new Map();
+
+function fracToDecimal(f) {
+  if (!f) return 2;
+  const p = f.split('/');
+  return p.length === 2 ? parseInt(p[0]) / parseInt(p[1]) + 1 : 2;
+}
+
+function findPrimaryLine(choices) {
+  const byLine = {};
+  for (const c of choices) {
+    const m = c.name.match(/(Over|Under)\s+([\d.]+)/i);
+    if (!m) continue;
+    const line = parseFloat(m[2]);
+    const side = m[1].toLowerCase();
+    if (!byLine[line]) byLine[line] = {};
+    byLine[line][side] = fracToDecimal(c.fractionalValue);
+  }
+  let best = null, bestDiff = Infinity;
+  for (const [line, sides] of Object.entries(byLine)) {
+    if (sides.over && sides.under) {
+      const diff = Math.abs(sides.over - sides.under);
+      if (diff < bestDiff) { bestDiff = diff; best = parseFloat(line); }
+    }
+  }
+  return best;
+}
+
+function extractLines(markets) {
+  const result = { goalLine: 2.5, cornerLine: 8.5, cardLine: 3.5 };
+  for (const market of markets) {
+    const name = market.marketName;
+    const choices = market.choices || [];
+    if (!choices.length) continue;
+    if (name === 'Match goals' || name === 'Total goals') {
+      result.goalLine = findPrimaryLine(choices) || 2.5;
+    } else if (name === 'Corners 2-Way' || name === 'Corners') {
+      result.cornerLine = findPrimaryLine(choices) || 8.5;
+    } else if (name === 'Cards in match') {
+      result.cardLine = findPrimaryLine(choices) || 3.5;
+    }
+  }
+  return result;
+}
+
+async function pollOdds() {
+  const liveIds = detector.getLiveMatchIds();
+  if (!liveIds.length) return;
+  const batch = liveIds.slice(oddsIdx, oddsIdx + 2);
+  oddsIdx = (oddsIdx + 2) % Math.max(1, liveIds.length);
+
+  for (const matchId of batch) {
+    try {
+      const result = await fetchSofa(`/api/v1/event/${matchId}/odds/1/all`);
+      if (result && result.status === 200) {
+        const data = JSON.parse(result.body.toString());
+        const lines = extractLines(data.markets || []);
+        matchLines.set(matchId, lines);
+        predictions.setLines(matchId, lines);
+      }
+    } catch { /* skip */ }
+  }
+}
+
 // Start all poll loops
 setInterval(pollLive, POLL_MS);
 setInterval(pollIncidents, INCIDENT_POLL_MS);
 setInterval(pollStats, STAT_POLL_MS);
+setInterval(pollOdds, 60000); // Odds change slowly, 60s is enough
 pollLive();
 
 // ── Start ──

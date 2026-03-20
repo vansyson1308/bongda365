@@ -70,7 +70,7 @@ class CommentaryEngine {
     }
 
     if (total >= 4) {
-      templates.push(`🎯 Trận đấu mưa bàn thắng! Đã có ${total} bàn. Kèo Tài 3.5 đã "vỡ"!`);
+      templates.push(`🎯 Trận đấu mưa bàn thắng! Đã có ${total} bàn thắng trong trận!`);
     }
 
     templates.push(
@@ -96,7 +96,7 @@ class CommentaryEngine {
     }
     if (total >= 3 && minute < 70) {
       setTimeout(() => {
-        this._emit(matchId, `📈 ${total} bàn trong ${minute} phút. Tốc độ ghi bàn: ${(total/minute*90).toFixed(1)} bàn/90 phút. Kèo Tài ${total + 0.5} đáng xem!`, 'normal', 'insight');
+        this._emit(matchId, `📈 ${total} bàn trong ${minute} phút. Tốc độ ghi bàn: ${(total/minute*90).toFixed(1)} bàn/90 phút!`, 'normal', 'insight');
       }, 5000);
     }
   }

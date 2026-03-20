@@ -125,7 +125,7 @@ const VI = {
   },
   markets: {
     'Full time':'Kết quả 1X2','Double chance':'Cơ hội kép','1st half':'Hiệp 1','Draw no bet':'Hòa hoàn tiền',
-    'Both teams to score':'Cả hai ghi bàn (BTTS)','Match goals':'Tài/Xỉu','Asian handicap':'Kèo chấp châu Á',
+    'Both teams to score':'Cả hai ghi bàn (BTTS)','Match goals':'Tổng bàn thắng','Asian handicap':'Kèo chấp châu Á',
     'Cards in match':'Thẻ phạt','Corners 2-Way':'Phạt góc','First team to score':'Ghi bàn trước',
   },
   incident: {

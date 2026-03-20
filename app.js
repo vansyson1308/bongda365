@@ -1169,7 +1169,7 @@ const app = {
         <div class="pred-stat"><div class="pred-stat-label">Hòa</div><div class="pred-stat-value">${dp}%</div></div>
         <div class="pred-stat"><div class="pred-stat-label">Khách${at ? ' (H' + at.position + ')' : ''}</div><div class="pred-stat-value text-red">${ap}%</div></div>
       </div>
-      <div class="pred-goals">⚽ Dự đoán: ${pGoals} bàn ${parseFloat(pGoals) >= 2.5 ? '→ Tài 2.5' : '→ Xỉu 2.5'}</div>
+      <div class="pred-goals">⚽ Dự đoán: ${pGoals} bàn ${parseFloat(pGoals) >= 2.5 ? '→ Trên 2.5 bàn' : '→ Dưới 2.5 bàn'}</div>
     </div>`;
   },
 

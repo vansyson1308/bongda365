@@ -5,7 +5,8 @@ const bus = require('./event-bus');
 
 class PredictionEngine {
   constructor() {
-    this.predictions = new Map(); // matchId -> {homeWin, draw, awayWin, over25, btts, nextGoal, corners, cards}
+    this.predictions = new Map(); // matchId -> {homeWin, draw, awayWin, overGoals, btts, nextGoal, overCorners, overCards}
+    this.lines = new Map(); // matchId -> {goalLine, cornerLine, cardLine}
     this.onUpdate = null;
   }
 
@@ -24,8 +25,20 @@ class PredictionEngine {
     return this.predictions.get(matchId) || this._default();
   }
 
+  setLines(matchId, lines) {
+    this.lines.set(matchId, lines);
+    // Update existing predictions with new lines
+    const p = this.predictions.get(matchId);
+    if (p) {
+      p.goalLine = lines.goalLine;
+      p.cornerLine = lines.cornerLine;
+      p.cardLine = lines.cardLine;
+      this._broadcast(matchId);
+    }
+  }
+
   _default() {
-    return { homeWin: 33, draw: 34, awayWin: 33, over25: 50, btts: 45, nextGoalHome: 50, cornersOver85: 50, cardsOver35: 50 };
+    return { homeWin: 33, draw: 34, awayWin: 33, overGoals: 50, btts: 45, nextGoalHome: 50, overCorners: 50, overCards: 50, goalLine: 2.5, cornerLine: 8.5, cardLine: 3.5 };
   }
 
   _initMatch(d) {
@@ -57,9 +70,12 @@ class PredictionEngine {
       p.awayWin = p.homeWin;
     }
 
-    // Over/Under
+    // Over/Under (dynamic line from bookmaker odds)
+    const lines = this.lines.get(d.matchId) || { goalLine: 2.5 };
+    const goalLine = lines.goalLine || 2.5;
     const goalRate = total / Math.max(1, 90 - remaining);
-    p.over25 = total >= 3 ? 100 : Math.min(92, Math.round(goalRate * 90 * 20 + total * 15));
+    p.overGoals = total > goalLine ? 100 : Math.min(92, Math.round(goalRate * 90 * 20 + (total / goalLine) * 40));
+    p.goalLine = goalLine;
 
     // BTTS
     p.btts = (score.home > 0 && score.away > 0) ? 100 : Math.min(75, p.btts + 5);
@@ -89,7 +105,7 @@ class PredictionEngine {
       p.draw += 6;
       p.nextGoalHome = Math.min(75, p.nextGoalHome + 12);
     }
-    p.cardsOver35 = Math.min(90, p.cardsOver35 + 15);
+    p.overCards = Math.min(90, p.overCards + 15);
 
     this.predictions.set(d.matchId, p);
     this._broadcast(d.matchId);
@@ -98,23 +114,28 @@ class PredictionEngine {
   _onStats(d) {
     const p = this.predictions.get(d.matchId) || this._default();
     const { currentStats, velocity, minute } = d;
+    const lines = this.lines.get(d.matchId) || {};
 
-    // Corners prediction
+    // Corners prediction (dynamic line)
     const corners = currentStats['Corner kicks'] || currentStats['cornerKicks'];
     if (corners) {
+      const cornerLine = lines.cornerLine || 8.5;
       const totalCorners = (parseInt(corners.home) || 0) + (parseInt(corners.away) || 0);
       const remaining = Math.max(1, 90 - (minute || 45));
       const projectedCorners = totalCorners + (totalCorners / Math.max(1, minute || 1)) * remaining;
-      p.cornersOver85 = Math.min(95, Math.round(projectedCorners > 8.5 ? 60 + (projectedCorners - 8.5) * 8 : 30 + projectedCorners * 3));
+      p.overCorners = Math.min(95, Math.round(projectedCorners > cornerLine ? 60 + (projectedCorners - cornerLine) * 8 : 30 + projectedCorners * 3));
+      p.cornerLine = cornerLine;
     }
 
-    // Cards prediction
+    // Cards prediction (dynamic line)
     const yellows = currentStats['Yellow cards'] || currentStats['yellowCards'];
     if (yellows) {
+      const cardLine = lines.cardLine || 3.5;
       const totalCards = (parseInt(yellows.home) || 0) + (parseInt(yellows.away) || 0);
       const remaining = Math.max(1, 90 - (minute || 45));
       const projectedCards = totalCards + (totalCards / Math.max(1, minute || 1)) * remaining;
-      p.cardsOver35 = Math.min(95, Math.round(projectedCards > 3.5 ? 55 + (projectedCards - 3.5) * 10 : 25 + projectedCards * 8));
+      p.overCards = Math.min(95, Math.round(projectedCards > cardLine ? 55 + (projectedCards - cardLine) * 10 : 25 + projectedCards * 8));
+      p.cardLine = cardLine;
     }
 
     // Possession-based win adjustment (gentle)
