@@ -2,6 +2,7 @@
 // Rule-based Vietnamese commentary with stat velocity analysis
 
 const bus = require('./event-bus');
+const voice = require('./mascot-voice');
 
 class CommentaryEngine {
   constructor() {
@@ -25,12 +26,18 @@ class CommentaryEngine {
     bus.on('var', d => this._onVar(d));
     bus.on('substitution', d => this._onSub(d));
 
+    // ── Turning point detection ──
+    bus.on('turning_point', d => this._onTurningPoint(d));
+
     // ── Layer 2: Stat velocity analysis ──
     bus.on('stat_update', d => this._onStatUpdate(d));
   }
 
   _emit(matchId, text, priority = 'normal', type = 'insight') {
-    const entry = { matchId, text, priority, type, ts: Date.now() };
+    // Wrap through mascot voice for personality
+    const ctx = this.matchContext.get(matchId);
+    const voiced = voice.voiceWrap(text, type, ctx);
+    const entry = { matchId, text: voiced, priority, type, ts: Date.now() };
     const log = this.commentaryLog.get(matchId) || [];
     log.push(entry);
     if (log.length > 50) log.shift();
@@ -219,6 +226,12 @@ class CommentaryEngine {
     // Track for smart summary
     const summary = this.matchIncidentSummary.get(d.matchId);
     if (summary) summary.subs++;
+  }
+
+  _onTurningPoint(d) {
+    const { matchId, before, after, shift } = d;
+    const comment = voice.turningPointComment(matchId, '', before.hp, after.hp, null);
+    this._emit(matchId, comment, 'high', 'turning_point');
   }
 
   // ═══════════════════════════════════════

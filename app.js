@@ -119,6 +119,11 @@ const app = {
           <div class="stat-item"><span class="stat-number" id="statLeagues">0</span><span class="stat-label">Giải</span></div>
         </div>
       </div>
+      <div class="social-proof-bar" id="socialProofBar">
+        <span class="sp-item">📊 <span id="spAnalyzed">0</span> trận phân tích</span>
+        <span class="sp-item">🎯 <span id="spAccuracy">--</span>% chính xác</span>
+        <span class="sp-item">💬 <span id="spChatters">0</span> fan online</span>
+      </div>
       <div class="date-strip" id="dateStrip"></div>
       <div class="filter-bar">
         <button class="filter-btn active" data-filter="live" onclick="app.filterLive('live',this)">🔴 Live</button>
@@ -411,6 +416,8 @@ const app = {
     // Summary tab — AI Insight + incidents + best players + avg positions
     html += `<div id="mtab-summary" class="tab-panel">`;
     html += this._renderMatchInsight(m, h2h, odds, stats, homeForm, awayForm, bestPlayers);
+    html += `<div id="probChartContainer"></div>`;
+    html += this._renderWhatIf(m);
     html += this._renderIncidents(incidents);
     if (bestPlayers) html += this._renderBestPlayers(bestPlayers, m);
     if (avgPositions) html += this._renderAvgPositions(avgPositions, m);
@@ -1407,34 +1414,199 @@ const app = {
     const winner = hp > ap ? match.home.short : ap > hp ? match.away.short : 'Hòa';
     const winProb = Math.max(hp, ap, dp);
 
-    return `<div class="match-insight">
-      <div class="insight-header">🤖 AI Match Insight</div>
-      <div class="insight-probs">
-        <div class="insight-team">
+    // Oracle quote - Ngựa Tiên Tri personality
+    const oracleQuote = this._generateOracleQuote(hp, dp, ap, factors, match);
+
+    // Confidence level based on data sources
+    const confidence = dataSources >= 3 ? 3 : dataSources >= 2 ? 2 : 1;
+    const stars = '⭐'.repeat(confidence) + '☆'.repeat(3 - confidence);
+    const confLabel = confidence >= 3 ? 'Rất tự tin' : confidence >= 2 ? 'Khá tự tin' : 'Tham khảo';
+
+    // Balance indicator
+    const balance = Math.abs(hp - ap) < 10 ? 'cân bằng' : hp > ap ? 'lệch chủ' : 'lệch khách';
+
+    return `<div class="tien-tri-card">
+      <div class="tt-header">
+        <span class="tt-avatar">🐴</span>
+        <span class="tt-title">Ngựa Tiên Tri</span>
+        <span class="tt-confidence" title="${confLabel}">${stars}</span>
+      </div>
+      <div class="tt-quote">"${oracleQuote}"</div>
+      <div class="tt-probs">
+        <div class="tt-team home">
           <img src="${match.home.logo}" class="team-logo-sm" onerror="this.style.display='none'">
-          <span>${match.home.short}</span>
-          <div class="insight-pct text-blue">${hp}%</div>
+          <span class="tt-team-name">${match.home.short}</span>
+          <span class="tt-pct text-blue">${hp}%</span>
         </div>
-        <div class="insight-team draw">
-          <span>Hòa</span>
-          <div class="insight-pct">${dp}%</div>
+        <div class="tt-team draw">
+          <span class="tt-team-name">Hòa</span>
+          <span class="tt-pct">${dp}%</span>
         </div>
-        <div class="insight-team">
+        <div class="tt-team away">
           <img src="${match.away.logo}" class="team-logo-sm" onerror="this.style.display='none'">
-          <span>${match.away.short}</span>
-          <div class="insight-pct text-red">${ap}%</div>
+          <span class="tt-team-name">${match.away.short}</span>
+          <span class="tt-pct text-red">${ap}%</span>
         </div>
       </div>
-      <div class="insight-bar">
-        <div class="insight-bar-home" style="width:${hp}%"></div>
-        <div class="insight-bar-draw" style="width:${dp}%"></div>
-        <div class="insight-bar-away" style="width:${ap}%"></div>
+      <div class="tt-bar">
+        <div class="tt-bar-home" style="width:${hp}%"></div>
+        <div class="tt-bar-draw" style="width:${dp}%"></div>
+        <div class="tt-bar-away" style="width:${ap}%"></div>
       </div>
-      <div class="insight-verdict">🏆 Dự đoán: <strong>${winner}</strong> (${winProb}%)</div>
-      <div class="insight-factors">
-        ${factors.slice(0, 5).map(f => `<div class="insight-factor">${f}</div>`).join('')}
+      <div class="tt-verdict">
+        <span class="tt-balance">${balance}</span>
+        🏆 <strong>${winner}</strong> (${winProb}%)
+      </div>
+      <details class="tt-explain">
+        <summary>📊 Tại sao? (${dataSources} nguồn dữ liệu)</summary>
+        <div class="tt-factors">
+          ${factors.slice(0, 5).map(f => `<div class="tt-factor">${f}</div>`).join('')}
+        </div>
+      </details>
+      <div class="tt-share">
+        <button class="tt-share-btn" onclick="app._shareTienTri(${match.id})">📤 Chia sẻ thẻ</button>
       </div>
     </div>`;
+  },
+
+  _generateOracleQuote(hp, dp, ap, factors, match) {
+    const winner = hp > ap ? 'home' : ap > hp ? 'away' : 'draw';
+    const margin = Math.abs(hp - ap);
+    const homeName = match.home.short;
+    const awayName = match.away.short;
+    const hasForm = factors.some(f => f.includes('trận gần'));
+    const hasH2H = factors.some(f => f.includes('Đối đầu'));
+    const hasStar = factors.some(f => f.includes('phong độ cao'));
+
+    // Troll mode for big margins
+    if (margin > 25) {
+      const strong = winner === 'home' ? homeName : awayName;
+      const weak = winner === 'home' ? awayName : homeName;
+      const trolls = [
+        `${weak} nghe tên mạnh, nhưng số liệu không bênh nổi`,
+        `${strong} chỉ cần thi đấu bình thường là đủ thắng`,
+        `Ngựa nói thẳng: ${weak} hôm nay khó lắm`,
+      ];
+      return trolls[Math.floor(Math.random() * trolls.length)];
+    }
+
+    // Draw prediction
+    if (winner === 'draw' || dp > 30) {
+      const draws = [
+        `Trận này mùi hòa khá nồng`,
+        `Cả hai đội đều thận trọng, hòa là kết quả hợp lý`,
+        `Cân bằng tuyệt đối. Một điểm cho mỗi đội`,
+      ];
+      return draws[Math.floor(Math.random() * draws.length)];
+    }
+
+    // Expert mode with specific factors
+    const fav = winner === 'home' ? homeName : awayName;
+    const other = winner === 'home' ? awayName : homeName;
+    const experts = [];
+    if (hasForm && hasH2H) experts.push(`${fav} vừa có phong độ tốt, vừa có lịch sử đối đầu thuận lợi. Cửa sáng!`);
+    if (hasStar) experts.push(`Cầu thủ ngôi sao đang cháy — yếu tố quyết định trận đấu`);
+    if (winner === 'home') {
+      experts.push(`${homeName} mạnh sân nhà, dữ liệu ủng hộ. Nhưng bóng đá luôn có bất ngờ`);
+      experts.push(`${homeName} có lợi thế rõ ràng hôm nay, nhưng ${awayName} không dễ buông`);
+    } else {
+      experts.push(`${awayName} dù đá sân khách nhưng phong độ vượt trội. Cửa khách đáng chú ý`);
+      experts.push(`Dữ liệu cho thấy ${awayName} có đủ vũ khí để giành 3 điểm trên sân khách`);
+    }
+    return experts[Math.floor(Math.random() * experts.length)];
+  },
+
+  _shareTienTri(matchId) {
+    if (typeof chat !== 'undefined' && chat.generatePredictionCard) {
+      const el = document.querySelector('.tien-tri-card');
+      if (!el) return;
+      const hp = parseInt(el.querySelector('.tt-team.home .tt-pct')?.textContent) || 33;
+      const dp = parseInt(el.querySelector('.tt-team.draw .tt-pct')?.textContent) || 34;
+      const ap = parseInt(el.querySelector('.tt-team.away .tt-pct')?.textContent) || 33;
+      const homeName = el.querySelector('.tt-team.home .tt-team-name')?.textContent || '';
+      const awayName = el.querySelector('.tt-team.away .tt-team-name')?.textContent || '';
+      const quote = el.querySelector('.tt-quote')?.textContent || '';
+      const canvas = chat.generatePredictionCard({ homeName, awayName, hp, dp, ap, quote });
+      chat.shareCard(canvas, `🐴 Ngựa Tiên Tri dự đoán: ${homeName} vs ${awayName} — BongDa365`);
+    }
+  },
+
+  // ═══════════════════════════════════════
+  //  PROBABILITY CHART + WHAT-IF
+  // ═══════════════════════════════════════
+  _renderProbChart(history) {
+    if (!history || history.length < 2) return '';
+    const w = 640, h = 180, pad = 40;
+    const n = history.length;
+    const xStep = (w - pad * 2) / Math.max(n - 1, 1);
+
+    const linePath = (key, data) => {
+      return data.map((d, i) => `${i === 0 ? 'M' : 'L'}${pad + i * xStep},${pad + (100 - d[key]) * (h - pad * 2) / 100}`).join(' ');
+    };
+
+    // Find turning points
+    const tpDots = history.filter(d => d.turningPoint).map((d, _, arr) => {
+      const idx = history.indexOf(d);
+      const x = pad + idx * xStep;
+      const y = pad + (100 - d.hp) * (h - pad * 2) / 100;
+      return `<circle cx="${x}" cy="${y}" r="6" fill="#f59e0b" stroke="#fff" stroke-width="2"><animate attributeName="r" values="6;8;6" dur="1.5s" repeatCount="indefinite"/></circle>`;
+    }).join('');
+
+    return `<div class="prob-chart-section">
+      <div class="section-label">📈 Biến động xác suất</div>
+      <svg class="prob-chart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
+        <!-- Grid lines -->
+        ${[25, 50, 75].map(v => {
+          const y = pad + (100 - v) * (h - pad * 2) / 100;
+          return `<line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="#333" stroke-dasharray="4"/>
+            <text x="${pad - 4}" y="${y + 4}" fill="#666" font-size="10" text-anchor="end">${v}%</text>`;
+        }).join('')}
+        <!-- Lines -->
+        <path d="${linePath('hp', history)}" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="${linePath('dp', history)}" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="4" stroke-linecap="round"/>
+        <path d="${linePath('ap', history)}" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"/>
+        ${tpDots}
+        <!-- Legend -->
+        <circle cx="${pad}" cy="${h - 8}" r="4" fill="#3b82f6"/><text x="${pad + 8}" y="${h - 4}" fill="#999" font-size="10">Chủ</text>
+        <circle cx="${pad + 60}" cy="${h - 8}" r="4" fill="#6b7280"/><text x="${pad + 68}" y="${h - 4}" fill="#999" font-size="10">Hòa</text>
+        <circle cx="${pad + 110}" cy="${h - 8}" r="4" fill="#ef4444"/><text x="${pad + 118}" y="${h - 4}" fill="#999" font-size="10">Khách</text>
+        <circle cx="${pad + 170}" cy="${h - 8}" r="4" fill="#f59e0b"/><text x="${pad + 178}" y="${h - 4}" fill="#999" font-size="10">Bước ngoặt</text>
+      </svg>
+    </div>`;
+  },
+
+  _renderWhatIf(match) {
+    if (!match || match.status !== 'LIVE') return '';
+    return `<div class="what-if-section">
+      <div class="section-label">🔮 Nếu như...?</div>
+      <div class="what-if-btns">
+        <button class="what-if-btn" onclick="app._simulateEvent(${match.id},'home_goal')">⚽ ${match.home.short} ghi bàn</button>
+        <button class="what-if-btn" onclick="app._simulateEvent(${match.id},'away_goal')">⚽ ${match.away.short} ghi bàn</button>
+        <button class="what-if-btn" onclick="app._simulateEvent(${match.id},'home_red')">🟥 ${match.home.short} thẻ đỏ</button>
+        <button class="what-if-btn" onclick="app._simulateEvent(${match.id},'away_red')">🟥 ${match.away.short} thẻ đỏ</button>
+      </div>
+      <div id="whatIfResult" style="display:none"></div>
+    </div>`;
+  },
+
+  _simulateEvent(matchId, event) {
+    if (!chat.socket) return;
+    chat.socket.emit('simulate', { matchId, event }, (result) => {
+      const el = document.getElementById('whatIfResult');
+      if (!el || !result) return;
+      const current = document.querySelector('.tt-team.home .tt-pct');
+      const curHp = parseInt(current?.textContent) || 33;
+      const curAp = parseInt(document.querySelector('.tt-team.away .tt-pct')?.textContent) || 33;
+      const hpDiff = result.homeWin - curHp;
+      const apDiff = result.awayWin - curAp;
+      const arrow = (v) => v > 0 ? `<span class="wi-up">↑${v}</span>` : v < 0 ? `<span class="wi-down">↓${Math.abs(v)}</span>` : `<span>→0</span>`;
+      el.innerHTML = `<div class="what-if-result">
+        <span>Chủ: ${result.homeWin}% ${arrow(hpDiff)}</span>
+        <span>Hòa: ${result.draw}%</span>
+        <span>Khách: ${result.awayWin}% ${arrow(apDiff)}</span>
+      </div>`;
+      el.style.display = 'block';
+    });
   },
 
   // ═══════════════════════════════════════
@@ -1524,13 +1696,47 @@ const app = {
 
   _renderRecommendations(matches) {
     const live = matches.filter(m => m.status === 'LIVE');
-    if (live.length < 3) return '';
+    if (live.length < 2) return '';
     const scored = live.map(m => ({ match: m, score: this._scoreMatchInterest(m) }))
       .sort((a, b) => b.score - a.score).slice(0, 3);
-    if (scored[0].score < 20) return '';
-    return `<div class="recommendations-section">
-      <div class="section-label">🔥 Trận đáng xem</div>
-      <div class="rec-grid">${scored.map(s => {
+    if (scored[0].score < 15) return '';
+
+    // Hero match = top pick
+    const hero = scored[0].match;
+    const heroTags = this._classifyMatch([], hero, []);
+    const heroQuote = this._generateOracleQuote(50, 25, 25, [], hero);
+    const rest = scored.slice(1);
+
+    let html = `<div class="recommendations-section">`;
+
+    // Hero card
+    html += `<a href="#/match/${hero.id}" class="hero-match">
+      <div class="hero-badge">🐴 Trận tâm điểm</div>
+      <div class="hero-teams">
+        <div class="hero-team">
+          <img src="${hero.home.logo}" class="hero-logo" onerror="this.style.display='none'">
+          <span>${hero.home.short}</span>
+        </div>
+        <div class="hero-score">
+          <span class="hero-score-num">${hero.homeScore ?? '-'} - ${hero.awayScore ?? '-'}</span>
+          <span class="status-live">${hero.minute ? hero.minute + "'" : 'LIVE'}</span>
+        </div>
+        <div class="hero-team">
+          <img src="${hero.away.logo}" class="hero-logo" onerror="this.style.display='none'">
+          <span>${hero.away.short}</span>
+        </div>
+      </div>
+      <div class="hero-oracle">"${heroQuote}" 🐴</div>
+      ${heroTags.length ? `<div class="hero-tags">${this._renderMatchTags(heroTags)}</div>` : ''}
+      <div class="hero-actions">
+        <span class="hero-btn">💬 Vào chat</span>
+        <span class="hero-btn" onclick="event.preventDefault();event.stopPropagation();app._shareTienTri(${hero.id})">📤 Chia sẻ</span>
+      </div>
+    </a>`;
+
+    // Remaining cards
+    if (rest.length) {
+      html += `<div class="rec-grid">${rest.map(s => {
         const m = s.match;
         const tags = this._classifyMatch([], m, []);
         return `<a href="#/match/${m.id}" class="rec-card">
@@ -1546,8 +1752,11 @@ const app = {
             ${tags.length ? this._renderMatchTags(tags) : ''}
           </div>
         </a>`;
-      }).join('')}</div>
-    </div>`;
+      }).join('')}</div>`;
+    }
+
+    html += `</div>`;
+    return html;
   },
 
   // ═══════════════════════════════════════

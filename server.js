@@ -296,6 +296,40 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+// ── Social Proof Counters ──
+const socialProof = { analyzed: 0, correct: 0, total: 0, shared: 0 };
+const analyzedMatches = new Set();
+
+bus.on('kickoff', d => {
+  if (d.matchId && !analyzedMatches.has(d.matchId)) {
+    analyzedMatches.add(d.matchId);
+    socialProof.analyzed++;
+  }
+});
+
+bus.on('fulltime', d => {
+  if (!d.matchId) return;
+  socialProof.total++;
+  // Compare prediction with actual result
+  const pred = predictions.get(d.matchId);
+  if (pred && d.score) {
+    const predWinner = pred.homeWin > pred.awayWin ? 'home' : pred.awayWin > pred.homeWin ? 'away' : 'draw';
+    const actual = d.score.home > d.score.away ? 'home' : d.score.away > d.score.home ? 'away' : 'draw';
+    if (predWinner === actual) socialProof.correct++;
+  }
+  analyzedMatches.delete(d.matchId);
+});
+
+function getSocialProof() {
+  const chatters = new Set();
+  for (const [, sockets] of io.sockets.adapter.rooms) {
+    sockets.forEach(id => chatters.add(id));
+  }
+  return { ...socialProof, chatters: chatters.size, accuracy: socialProof.total > 0 ? Math.round(socialProof.correct / socialProof.total * 100) : 0 };
+}
+
+setInterval(() => io.emit('social_proof', getSocialProof()), 60000);
+
 // ── Prediction Leaderboard (in-memory, resets on restart) ──
 const predLeaderboard = new Map();
 
@@ -316,6 +350,12 @@ const io = new SocketIO(server, {
 });
 
 io.on('connection', socket => {
+  // Send social proof on connect
+  socket.emit('social_proof', getSocialProof());
+
+  // Card shared tracking
+  socket.on('card_shared', () => { socialProof.shared++; });
+
   // Join match room
   socket.on('join_match', matchId => {
     socket.join(`match_${matchId}`);
@@ -326,6 +366,16 @@ io.on('connection', socket => {
     socket.emit('commentary_log', log);
     const pred = predictions.get(matchId);
     socket.emit('predictions', { matchId, predictions: pred });
+    // Send probability history for chart
+    const history = predictions.getHistory(matchId);
+    if (history.length) socket.emit('prediction_history', { matchId, history });
+  });
+
+  // What-if simulation
+  socket.on('simulate', (data, cb) => {
+    if (!data?.matchId || !data?.event) return;
+    const result = predictions.simulate(data.matchId, data.event);
+    if (typeof cb === 'function') cb(result);
   });
 
   socket.on('leave_match', matchId => socket.leave(`match_${matchId}`));
@@ -381,14 +431,28 @@ commentary.start(entry => {
   io.to(`match_${entry.matchId}`).emit('commentary', entry);
   io.emit('commentary_global', entry); // For ticker
 
-  // Mascot auto-post in chat for critical events
-  if (entry.priority === 'critical') {
+  // Mascot auto-post in chat for critical + high events
+  if (entry.priority === 'critical' || entry.priority === 'high') {
     io.to(`match_${entry.matchId}`).emit('chat_msg', {
       user: '🐴 Ngựa Tiên Tri',
       text: entry.text,
       ts: Date.now(),
       isMascot: true,
     });
+  }
+
+  // Bot engagement prompts after critical events
+  if (entry.priority === 'critical' && (entry.type === 'goal' || entry.type === 'red_card' || entry.type === 'var')) {
+    const mascotVoice = require('./mascot-voice');
+    setTimeout(() => {
+      const prompt = mascotVoice.engagementPrompt(entry.type, {});
+      io.to(`match_${entry.matchId}`).emit('chat_msg', {
+        user: '🐴 Ngựa Tiên Tri',
+        text: prompt,
+        ts: Date.now(),
+        isMascot: true,
+      });
+    }, 4000);
   }
 });
 

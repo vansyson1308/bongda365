@@ -34,8 +34,15 @@ const chat = {
     this.socket.on('leaderboard', data => {
       if (typeof app !== 'undefined' && app._renderLeaderboard) app._renderLeaderboard(data);
     });
+    this.socket.on('prediction_history', data => {
+      if (data?.history && typeof app !== 'undefined' && app._renderProbChart) {
+        const el = document.getElementById('probChartContainer');
+        if (el) el.innerHTML = app._renderProbChart(data.history);
+      }
+    });
     this.socket.on('match_event', event => this.onMatchEvent(event));
     this.socket.on('live_event', event => this.onLiveEvent(event));
+    this.socket.on('social_proof', data => this.updateSocialProof(data));
     this.socket.on('live_update', (data) => {
       if (typeof app !== 'undefined' && typeof router !== 'undefined'
           && (router.currentPage === '/' || router.currentPage === '/live')) {
@@ -120,6 +127,14 @@ const chat = {
       row('BTTS', 'btts', 'orange') +
       row(`Trên ${cl} góc`, 'overCorners', 'purple') +
       row(`Trên ${cdl} thẻ`, 'overCards', 'yellow');
+  },
+
+  updateSocialProof(data) {
+    if (!data) return;
+    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    el('spAnalyzed', data.analyzed || 0);
+    el('spAccuracy', data.accuracy || '--');
+    el('spChatters', data.chatters || 0);
   },
 
   showReaction(emoji) {
@@ -235,6 +250,98 @@ const chat = {
     }
     if (line) lines.push(line.trim());
     return lines.slice(0, 3);
+  },
+
+  // ── Prediction Card (Thẻ Tiên Tri) ──
+  generatePredictionCard(data) {
+    const { homeName, awayName, hp, dp, ap, quote } = data;
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080; canvas.height = 1080;
+    const ctx = canvas.getContext('2d');
+
+    // Background gradient (dark with gold accent)
+    const grad = ctx.createLinearGradient(0, 0, 1080, 1080);
+    grad.addColorStop(0, '#0a0e17');
+    grad.addColorStop(0.5, '#1a1a2e');
+    grad.addColorStop(1, '#16213e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1080, 1080);
+
+    // Gold accent stripes
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(0, 0, 1080, 6);
+    ctx.fillRect(0, 1074, 1080, 6);
+
+    // Horse avatar + title
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = 'bold 52px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🐴 Ngựa Tiên Tri', 540, 100);
+
+    // Team names
+    ctx.font = 'bold 56px Inter, sans-serif';
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillText(homeName || 'Home', 540, 230);
+    ctx.fillStyle = '#888';
+    ctx.font = '36px Inter, sans-serif';
+    ctx.fillText('vs', 540, 280);
+    ctx.font = 'bold 56px Inter, sans-serif';
+    ctx.fillStyle = '#ef4444';
+    ctx.fillText(awayName || 'Away', 540, 340);
+
+    // Probability bar (gradient)
+    const barY = 420, barH = 50, barX = 90, barW = 900;
+    // Home (blue)
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(barX, barY, barW * hp / 100, barH);
+    // Draw (gray)
+    ctx.fillStyle = '#6b7280';
+    ctx.fillRect(barX + barW * hp / 100, barY, barW * dp / 100, barH);
+    // Away (red)
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(barX + barW * (hp + dp) / 100, barY, barW * ap / 100, barH);
+
+    // Probability text
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 40px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${hp}%`, barX + 10, barY + 38);
+    ctx.textAlign = 'center';
+    ctx.fillText(`${dp}%`, 540, barY + 38);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${ap}%`, barX + barW - 10, barY + 38);
+
+    // Labels under bar
+    ctx.font = '28px Inter, sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'left';
+    ctx.fillText('Chủ', barX, barY + barH + 35);
+    ctx.textAlign = 'center';
+    ctx.fillText('Hòa', 540, barY + barH + 35);
+    ctx.textAlign = 'right';
+    ctx.fillText('Khách', barX + barW, barY + barH + 35);
+
+    // Oracle quote (gold, wrapped)
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = 'italic 36px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    const quoteText = (quote || '').replace(/^"|"$/g, '');
+    const lines = this.wrapText(ctx, `"${quoteText}"`, 850);
+    lines.forEach((line, i) => ctx.fillText(line, 540, 640 + i * 48));
+
+    // Verdict
+    const winner = hp > ap ? homeName : ap > hp ? awayName : 'Hòa';
+    const winPct = Math.max(hp, dp, ap);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 44px Inter, sans-serif';
+    ctx.fillText(`🏆 ${winner} (${winPct}%)`, 540, 830);
+
+    // Branding
+    ctx.fillStyle = '#5a6580';
+    ctx.font = '28px Inter, sans-serif';
+    ctx.fillText('🐴 Ngựa đã nói — BongDa365.com', 540, 1020);
+
+    return canvas;
   },
 
   async shareCard(canvas, caption) {
