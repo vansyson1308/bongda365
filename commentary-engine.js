@@ -98,7 +98,7 @@ class CommentaryEngine {
     // Follow-up insight
     if (score.home > 0 && score.away > 0) {
       setTimeout(() => {
-        this._emit(matchId, `📊 Cả hai đội đều đã ghi bàn. Kèo BTTS (Cả hai ghi bàn) = Có ✅`, 'normal', 'insight');
+        this._emit(matchId, `📊 Cả hai đội đều đã ghi bàn (BTTS ✅). Xu hướng trận đấu nhiều bàn!`, 'normal', 'insight');
       }, 3000);
     }
     if (total >= 3 && minute < 70) {
