@@ -1,7 +1,7 @@
 @echo off
 title BongDa365 - SofaScore Proxy + Tunnel
 echo ============================================
-echo   BongDa365 - Local Proxy Startup
+echo   BongDa365 - Local Proxy + Quick Tunnel
 echo ============================================
 echo.
 
@@ -17,17 +17,21 @@ start "SofaProxy" /min cmd /c "node sofa-proxy.js"
 timeout /t 2 /nobreak >nul
 
 REM Verify proxy is running
-powershell -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:3001/health' -UseBasicParsing -TimeoutSec 3; Write-Host 'Proxy status:' $r.Content } catch { Write-Host 'ERROR: Proxy not responding!' }"
+powershell -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:3001/health' -UseBasicParsing -TimeoutSec 3; Write-Host 'Proxy OK:' $r.Content } catch { Write-Host 'ERROR: Proxy not responding!' }"
 echo.
 
-REM Start Cloudflare Tunnel
-echo [3/3] Starting Cloudflare Tunnel...
-echo      URL: https://sofa-proxy.bongda365.xyz
+REM Start Quick Tunnel (no login needed, gives trycloudflare.com URL)
+echo [3/3] Starting Quick Tunnel...
 echo.
-cloudflared.exe tunnel run bongda365-proxy
+echo   Copy the URL (*.trycloudflare.com) va set tren Render:
+echo   Key:   SOFA_PROXY_URL
+echo   Value: https://xxxxx.trycloudflare.com
+echo.
+echo ============================================
+cloudflared.exe tunnel --url http://localhost:3001
 
-REM If tunnel exits, keep window open
+REM If tunnel exits, restart loop
 echo.
-echo TUNNEL STOPPED! Press any key to restart...
-pause
+echo TUNNEL DA DUNG! Dang khoi dong lai trong 5 giay...
+timeout /t 5 /nobreak >nul
 goto :eof

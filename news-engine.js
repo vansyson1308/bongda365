@@ -498,8 +498,11 @@ async function getFullArticle(id) {
       console.log(`[News] Translating ${paragraphs.length} paragraphs (${paragraphs.join('').length} chars)...`);
       const translated = await translateParagraphs(paragraphs);
       article.contentVi = translated;
+      // Rewrite full content into unique Vietnamese editorial style
+      article.rewritten = false; // Reset so rewriteContent processes contentVi
+      rewriteContent(article);
       article.contentStatus = 'ready';
-      console.log(`[News] Full article ready: ${article.id}`);
+      console.log(`[News] Full article ready (rewritten): ${article.id}`);
     } catch (e) {
       article.contentStatus = 'failed';
       article.contentVi = [article.summaryVi || article.summary];
@@ -512,6 +515,197 @@ async function getFullArticle(id) {
   pendingFullFetch.delete(id);
 
   return articles.get(id);
+}
+
+// ═══════════════════════════════════════════════════════
+//  CONTENT UNIQUIFICATION LAYER
+//  Transforms translated articles into unique Vietnamese editorial content
+// ═══════════════════════════════════════════════════════
+
+const CATEGORY_INTROS = {
+  'transfers': [
+    'Thị trường chuyển nhượng đang nóng lên với những diễn biến mới nhất.',
+    'Tin chuyển nhượng hôm nay tiếp tục mang đến nhiều bất ngờ cho người hâm mộ.',
+    'Làng bóng đá lại xôn xao với thông tin chuyển nhượng đáng chú ý.',
+    'Những bước ngoặt mới trên thị trường chuyển nhượng vừa được hé lộ.',
+    'Cánh cửa chuyển nhượng đang mở ra những cơ hội thú vị cho các đội bóng.',
+    'Bản tin chuyển nhượng nóng hổi vừa được cập nhật với nhiều thay đổi đáng kể.',
+    'Thị trường chuyển nhượng tiếp tục sôi động với hàng loạt thương vụ mới.',
+  ],
+  'injuries': [
+    'Tin không vui cho người hâm mộ khi có thêm cập nhật về tình hình chấn thương.',
+    'Phòng y tế lại truyền đi những tin tức đáng lo ngại cho các đội bóng.',
+    'Vấn đề chấn thương tiếp tục là nỗi ám ảnh trong làng bóng đá.',
+    'Tình hình nhân sự đang gặp khó khăn khi có thêm tin tức về chấn thương.',
+    'Danh sách chấn thương lại dài thêm, ảnh hưởng không nhỏ đến kế hoạch của đội bóng.',
+    'Cập nhật mới nhất từ phòng y tế khiến nhiều người hâm mộ lo lắng.',
+  ],
+  'match-preview': [
+    'Trận đấu đáng chú ý sắp diễn ra, hứa hẹn nhiều kịch tính cho người hâm mộ.',
+    'Một cuộc đối đầu hấp dẫn đang chờ đợi các cổ động viên trong thời gian tới.',
+    'Sân cỏ sắp chứng kiến màn so tài được nhiều người mong chờ.',
+    'Trước giờ bóng lăn, nhiều yếu tố thú vị đang được giới chuyên môn phân tích.',
+    'Cuộc chạm trán sắp tới đang thu hút sự quan tâm lớn từ cộng đồng bóng đá.',
+    'Không khí trước trận đấu đang nóng dần với nhiều dự đoán trái chiều.',
+  ],
+  'match-review': [
+    'Kết quả đáng chú ý vừa được ghi nhận trên sân cỏ.',
+    'Trận đấu vừa khép lại với những diễn biến đầy kịch tính.',
+    'Sau tiếng còi kết thúc, nhiều điều đáng bàn luận từ trận đấu vừa qua.',
+    'Kết quả trận đấu đã mang đến cung bậc cảm xúc khác nhau cho người hâm mộ.',
+    'Sân cỏ vừa chứng kiến một trận đấu để lại nhiều dấu ấn.',
+    'Những con số sau trận đấu phản ánh rõ nét diễn biến trên sân.',
+  ],
+  'general': [
+    'BongDa365 cập nhật những tin tức bóng đá mới nhất cho bạn đọc.',
+    'Tin tức bóng đá hôm nay tiếp tục mang đến những thông tin đáng chú ý.',
+    'Thế giới bóng đá lại có thêm những diễn biến mới đáng quan tâm.',
+    'Cập nhật nhanh những sự kiện nổi bật trong làng túc cầu.',
+    'BongDa365 tổng hợp những thông tin bóng đá quan trọng nhất trong ngày.',
+    'Làng bóng đá lại sôi động với những tin tức mới nhất vừa được ghi nhận.',
+  ],
+};
+
+const TRANSITIONS = [
+  'Cụ thể hơn, ',
+  'Đáng chú ý, ',
+  'Bên cạnh đó, ',
+  'Ngoài ra, ',
+  'Theo diễn biến mới nhất, ',
+  'Điều đáng nói là ',
+  'Không chỉ vậy, ',
+  'Một khía cạnh khác cần lưu ý, ',
+  'Về phía liên quan, ',
+  'Trong bối cảnh đó, ',
+];
+
+const CONCLUSIONS = {
+  'transfers': [
+    'Nhận định BongDa365: Thương vụ này có thể tạo ra bước ngoặt quan trọng cho đội bóng trong thời gian tới. Người hâm mộ hãy tiếp tục theo dõi để cập nhật những diễn biến mới nhất.',
+    'Nhận định BongDa365: Động thái chuyển nhượng này cho thấy tham vọng lớn của đội bóng và có thể thay đổi cục diện cạnh tranh ở giải đấu.',
+    'Nhận định BongDa365: Nếu thương vụ thành công, đây sẽ là một bản hợp đồng có ý nghĩa chiến lược cả về chuyên môn lẫn thương mại.',
+    'Nhận định BongDa365: Thị trường chuyển nhượng luôn đầy biến động, và thương vụ này chắc chắn sẽ còn nhiều diễn biến đáng theo dõi.',
+    'Nhận định BongDa365: Đây là minh chứng cho thấy cuộc đua chuyển nhượng ngày càng khốc liệt giữa các đội bóng hàng đầu.',
+  ],
+  'injuries': [
+    'Nhận định BongDa365: Chấn thương này có thể ảnh hưởng đáng kể đến lực lượng và kế hoạch chiến thuật của đội bóng trong các trận đấu tới.',
+    'Nhận định BongDa365: Ban huấn luyện cần tìm phương án thay thế hợp lý để lấp vào khoảng trống do chấn thương để lại.',
+    'Nhận định BongDa365: Vấn đề y tế trong bóng đá hiện đại ngày càng được quan tâm, và trường hợp này một lần nữa nhấn mạnh tầm quan trọng của việc quản lý thể lực cầu thủ.',
+    'Nhận định BongDa365: Người hâm mộ hy vọng cầu thủ sớm hồi phục và trở lại sân cỏ trong trạng thái tốt nhất.',
+    'Nhận định BongDa365: Tình hình chấn thương luôn là yếu tố khó lường, và đội bóng cần có chiều sâu đội hình để đối phó với những tình huống như thế này.',
+  ],
+  'match-preview': [
+    'Nhận định BongDa365: Trận đấu này hứa hẹn sẽ rất hấp dẫn và khó đoán trước kết quả. Hãy cùng chờ đợi những diễn biến kịch tính trên sân.',
+    'Nhận định BongDa365: Với phong độ hiện tại của cả hai đội, đây chắc chắn sẽ là một màn so tài đáng xem.',
+    'Nhận định BongDa365: Yếu tố sân nhà và tinh thần thi đấu sẽ đóng vai trò quan trọng trong việc quyết định kết quả trận đấu.',
+    'Nhận định BongDa365: Chiến thuật và sự chuẩn bị của ban huấn luyện sẽ là chìa khóa cho thành công trong trận đấu sắp tới.',
+    'Nhận định BongDa365: Người hâm mộ không nên bỏ lỡ trận đấu này vì nó có thể ảnh hưởng lớn đến bảng xếp hạng.',
+  ],
+  'match-review': [
+    'Nhận định BongDa365: Kết quả trận đấu phản ánh rõ sự chênh lệch về phong độ và chiến thuật giữa hai đội. Đây sẽ là bài học quý cho các trận đấu tiếp theo.',
+    'Nhận định BongDa365: Trận đấu đã cho thấy nhiều điều về sức mạnh thực sự của các đội bóng và triển vọng của họ trong mùa giải.',
+    'Nhận định BongDa365: Những gì diễn ra trên sân là minh chứng cho thấy bóng đá luôn đầy bất ngờ và không có gì là chắc chắn.',
+    'Nhận định BongDa365: Kết quả này sẽ có tác động đáng kể đến cuộc đua tại giải đấu và tinh thần của cả hai đội bóng.',
+    'Nhận định BongDa365: Sau trận đấu, cả hai đội đều có những bài học để rút ra trước khi bước vào những thử thách tiếp theo.',
+  ],
+  'general': [
+    'Nhận định BongDa365: Đây là thông tin đáng chú ý mà người hâm mộ bóng đá nên theo dõi sát sao trong thời gian tới.',
+    'Nhận định BongDa365: Sự kiện này có thể tạo ra những ảnh hưởng nhất định trong làng bóng đá, và BongDa365 sẽ tiếp tục cập nhật.',
+    'Nhận định BongDa365: Thế giới bóng đá luôn vận động không ngừng, và chúng tôi sẽ đồng hành cùng bạn đọc để cập nhật mọi diễn biến.',
+    'Nhận định BongDa365: Hãy tiếp tục theo dõi BongDa365 để không bỏ lỡ những tin tức bóng đá nóng hổi nhất.',
+    'Nhận định BongDa365: Bóng đá không chỉ là trò chơi trên sân, mà còn là câu chuyện đằng sau mỗi sự kiện đáng để suy ngẫm.',
+  ],
+};
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/**
+ * Rewrite translated content into unique Vietnamese editorial style.
+ * Called after translation for both summary and full articles.
+ * @param {object} article - The article object (must have category, source, summaryVi or contentVi)
+ * @returns {object} article - Modified in-place with rewritten content
+ */
+function rewriteContent(article) {
+  const cat = article.category || 'general';
+  const source = article.source || 'báo nước ngoài';
+
+  // --- Rewrite summaryVi ---
+  if (article.summaryVi && !article.rewritten) {
+    const intro = pickRandom(CATEGORY_INTROS[cat] || CATEGORY_INTROS['general']);
+    const attribution = `Theo nguồn tin từ ${source}, `;
+    article.summaryVi = `${intro} ${attribution}${lowercaseFirst(article.summaryVi)}`;
+  }
+
+  // --- Rewrite contentVi (full article paragraphs) ---
+  if (article.contentVi && article.contentVi.length >= 2) {
+    const rewritten = [];
+
+    // 1. Editorial intro paragraph
+    const intro = pickRandom(CATEGORY_INTROS[cat] || CATEGORY_INTROS['general']);
+    rewritten.push(intro);
+
+    // 2. Source attribution on first content paragraph
+    const attribution = `Theo nguồn tin từ ${source}, ${lowercaseFirst(article.contentVi[0])}`;
+    rewritten.push(attribution);
+
+    // 3. Restructure body paragraphs — group and interleave with transitions
+    const body = article.contentVi.slice(1);
+
+    // Shuffle middle paragraphs slightly (swap adjacent pairs) for uniqueness
+    // but keep rough coherence by only doing local swaps
+    const shuffled = softShuffle(body);
+
+    for (let i = 0; i < shuffled.length; i++) {
+      let para = shuffled[i];
+      // Add transition phrase every 2-3 paragraphs
+      if (i > 0 && i % 2 === 0 && i < shuffled.length - 1) {
+        para = pickRandom(TRANSITIONS) + lowercaseFirst(para);
+      }
+      rewritten.push(para);
+    }
+
+    // 4. BongDa365 branding mid-article (insert after ~40% of content)
+    const brandingIdx = Math.max(2, Math.floor(rewritten.length * 0.4));
+    const branding = 'BongDa365 tổng hợp và phân tích từ nhiều nguồn tin uy tín để mang đến cho bạn đọc góc nhìn toàn diện nhất.';
+    rewritten.splice(brandingIdx, 0, branding);
+
+    // 5. Analytical conclusion
+    const conclusion = pickRandom(CONCLUSIONS[cat] || CONCLUSIONS['general']);
+    rewritten.push(conclusion);
+
+    article.contentVi = rewritten;
+  }
+
+  article.rewritten = true;
+  return article;
+}
+
+/**
+ * Soft-shuffle: swap some adjacent paragraph pairs for structural uniqueness
+ * while maintaining general readability flow.
+ */
+function softShuffle(paragraphs) {
+  if (paragraphs.length <= 2) return [...paragraphs];
+  const result = [...paragraphs];
+  // Swap every other adjacent pair (skip first and last)
+  for (let i = 1; i < result.length - 2; i += 3) {
+    const temp = result[i];
+    result[i] = result[i + 1];
+    result[i + 1] = temp;
+  }
+  return result;
+}
+
+/**
+ * Lowercase the first character of a string (for Vietnamese sentence joining)
+ */
+function lowercaseFirst(str) {
+  if (!str) return '';
+  // Don't lowercase if it starts with a proper noun indicator or special char
+  if (/^[A-Z]{2,}|^\[|^[0-9]/.test(str)) return str;
+  return str.charAt(0).toLowerCase() + str.slice(1);
 }
 
 // ═══ TRANSLATION (Google Translate unofficial) ═══
@@ -561,6 +755,8 @@ async function processTranslateQueue() {
       const parts = translated.split(' ||| ');
       article.titleVi = parts[0] || article.title;
       article.summaryVi = (parts[1] || article.summary).trim();
+      // Rewrite summary into unique Vietnamese editorial content
+      rewriteContent(article);
     } catch (e) {
       article.titleVi = '[EN] ' + article.title;
       article.summaryVi = '[EN] ' + article.summary;

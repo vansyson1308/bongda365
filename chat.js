@@ -53,6 +53,22 @@ const chat = {
         }
       }
     });
+
+    // Push notification socket listeners
+    if (typeof pushNotifications !== 'undefined') {
+      this.socket.on('push_goal', d => {
+        pushNotifications.notifyGoal(d.matchId, d.scorer, d.homeTeam, d.awayTeam, d.homeScore, d.awayScore, d.minute, d.homeId, d.awayId);
+      });
+      this.socket.on('push_redcard', d => {
+        pushNotifications.notifyRedCard(d.matchId, d.player, d.team, d.minute, d.homeId, d.awayId);
+      });
+      this.socket.on('push_kickoff', d => {
+        pushNotifications.notifyKickoff(d.matchId, d.homeTeam, d.awayTeam, null, d.homeId, d.awayId);
+      });
+      this.socket.on('push_fulltime', d => {
+        pushNotifications.notifyFulltime(d.matchId, d.homeTeam, d.awayTeam, d.homeScore, d.awayScore, d.homeId, d.awayId);
+      });
+    }
   },
 
   joinMatch(matchId) {
@@ -73,6 +89,8 @@ const chat = {
   sendMessage(text) {
     if (!text.trim() || !this.currentMatch) return;
     this.socket.emit('chat_msg', { matchId: this.currentMatch, text: text.trim(), user: this.username });
+    // Track interaction for push notification prompt
+    if (typeof pushNotifications !== 'undefined') pushNotifications.trackInteraction();
   },
 
   sendReaction(emoji) {
@@ -176,7 +194,7 @@ const chat = {
     if (event.type === 'red_card') {
       showToast(`🟥 Thẻ đỏ: ${event.data.player} (${event.data.team})`, 'red_card');
     }
-    // Push notification for favourite teams
+    // Push notification for favourite teams (legacy desktop)
     if (typeof favourites !== 'undefined' && event.data) {
       favourites.checkLiveEventForFav({
         matchId: event.data.matchId,
@@ -189,6 +207,8 @@ const chat = {
         minute: event.data.minute
       });
     }
+
+    // Web Push notifications are handled by dedicated push_* socket listeners (see init)
   },
 
   // ── Viral Card Generator ──

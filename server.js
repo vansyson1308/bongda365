@@ -13,6 +13,7 @@ const predictions = require('./prediction-engine');
 const newsEngine = require('./news-engine');
 const statsEngine = require('./stats-engine');
 const redditEngine = require('./reddit-engine');
+const WC2026 = require('./worldcup-data');
 
 const PORT = process.env.PORT || 3000;
 const POLL_MS = 5000;
@@ -26,6 +27,45 @@ const STAT_POLL_MS = 30000; // Fetch stats every 30s
 const MIME = { '.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon','.jpg':'image/jpeg','.gif':'image/gif','.woff2':'font/woff2','.webmanifest':'application/manifest+json','.xml':'application/xml','.txt':'text/plain' };
 const SITE_URL = 'https://bongda365.xyz';
 
+// ── Challenge System (Thách Đấu Dự Đoán) ──
+const challenges = new Map(); // challengeId -> challenge data
+
+function generateChallengeId() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = 'ch_';
+  for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', c => {
+      chunks.push(c);
+      if (chunks.reduce((a, c) => a + c.length, 0) > 1e5) { reject(new Error('Body too large')); req.destroy(); }
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
+      catch { reject(new Error('Invalid JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+// Periodic cleanup: evict expired challenges every hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ch] of challenges) {
+    if (now > ch.expiresAt && ch.status === 'pending') {
+      challenges.delete(id);
+    }
+    // Also remove settled challenges older than 48h
+    if (ch.status === 'settled' && now - ch.createdAt > 48 * 3600000) {
+      challenges.delete(id);
+    }
+  }
+}, 3600000);
+
 // ── SEO: Bot Detection ──
 const BOT_UA = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|quora|pinterest|slackbot|vkshare|W3C_Validator|whatsapp|telegram|discord/i;
 function isBot(ua) { return BOT_UA.test(ua || ''); }
@@ -35,11 +75,29 @@ function seoHTML(opts) {
   const { title, desc, url, type = 'website', image } = opts;
   const fullUrl = SITE_URL + (url || '/');
   const ogImage = image || SITE_URL + '/og-default.png';
+  // Always include WebSite schema on all pages
+  const websiteSchema = { '@context': 'https://schema.org', '@type': 'WebSite', name: 'BongDa365', url: SITE_URL, description: 'Tỉ số trực tiếp bóng đá, dự đoán AI, chat live', potentialAction: { '@type': 'SearchAction', target: SITE_URL + '/search?q={search_term_string}', 'query-input': 'required name=search_term_string' } };
+  // BreadcrumbList schema for navigation hierarchy
+  const pathParts = (url || '/').split('/').filter(Boolean);
+  const breadcrumbItems = [{ '@type': 'ListItem', position: 1, name: 'Trang chủ', item: SITE_URL + '/' }];
+  const breadcrumbNames = { live: 'Trực tiếp', schedule: 'Lịch thi đấu', predictions: 'Dự đoán AI', news: 'Tin tức', league: 'Giải đấu', match: 'Trận đấu', worldcup: 'World Cup', privacy: 'Bảo mật', terms: 'Điều khoản', challenge: 'Thách đấu' };
+  let crumbPath = '';
+  for (let i = 0; i < pathParts.length; i++) {
+    crumbPath += '/' + pathParts[i];
+    breadcrumbItems.push({ '@type': 'ListItem', position: i + 2, name: breadcrumbNames[pathParts[i]] || decodeURIComponent(pathParts[i]), item: SITE_URL + crumbPath });
+  }
+  const breadcrumbSchema = { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: breadcrumbItems };
+  // Build JSON-LD array: always WebSite + BreadcrumbList + page-specific
+  const ldArray = [websiteSchema, breadcrumbSchema];
+  if (opts.jsonLd && Object.keys(opts.jsonLd).length > 0) {
+    if (Array.isArray(opts.jsonLd)) { ldArray.push(...opts.jsonLd); } else { ldArray.push(opts.jsonLd); }
+  }
+  const ldScripts = ldArray.map(ld => `<script type="application/ld+json">${JSON.stringify(ld)}</script>`).join('\n');
   return `<!DOCTYPE html><html lang="vi"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>${title}</title>
 <meta name="description" content="${desc}">
-<meta name="robots" content="index, follow">
+<meta name="robots" content="index, follow, max-image-preview:large">
 <link rel="canonical" href="${fullUrl}">
 <meta property="og:title" content="${title}">
 <meta property="og:description" content="${desc}">
@@ -52,7 +110,7 @@ function seoHTML(opts) {
 <meta name="twitter:title" content="${title}">
 <meta name="twitter:description" content="${desc}">
 <meta name="twitter:image" content="${ogImage}">
-<script type="application/ld+json">${JSON.stringify(opts.jsonLd || {})}</script>
+${ldScripts}
 </head><body>
 <h1>${title}</h1><p>${desc}</p>
 ${opts.body || ''}
@@ -60,15 +118,289 @@ ${opts.body || ''}
 </body></html>`;
 }
 
+// ── World Cup 2026 SEO Content Hub ──
+function worldCupSeoHub(urlPath, siteUrl, wc) {
+  // Main Hub: /world-cup-2026
+  if (urlPath === '/world-cup-2026') {
+    const groupLinks = Object.keys(wc.groups).map(g => `<li><a href="${siteUrl}/world-cup-2026/bang/${g.toLowerCase()}">Bảng ${g}: ${wc.groups[g].teams.filter(t=>t!=='TBD').join(', ')}</a></li>`).join('');
+    const teamLinks = Object.entries(wc.teamProfiles).slice(0, 16).map(([slug, t]) => `<li><a href="${siteUrl}/world-cup-2026/doi-tuyen/${slug}">${t.flag} ${t.nameVi} (FIFA #${t.fifaRank})</a></li>`).join('');
+    const venueList = wc.venues.map(v => `<li>${v.name}, ${v.city} (${v.countryVi}) - ${v.capacity.toLocaleString()} chỗ</li>`).join('');
+    const body = `
+    <article>
+    <h2>World Cup 2026 - Giải vô địch bóng đá thế giới lần thứ 23</h2>
+    <p>FIFA World Cup 2026 sẽ là kỳ World Cup lịch sử với format mới: <strong>48 đội tuyển quốc gia</strong> được chia thành <strong>12 bảng đấu</strong>, thi đấu tổng cộng <strong>104 trận</strong> tại 16 sân vận động trải dài 3 quốc gia Bắc Mỹ. Đây là lần đầu tiên World Cup được đồng tổ chức bởi 3 nước: <strong>Mỹ, Canada và Mexico</strong>.</p>
+    <p>Giải đấu diễn ra từ <strong>ngày 11 tháng 6 đến 19 tháng 7 năm 2026</strong>. Trận khai mạc dự kiến tại Estadio Azteca (Mexico City), và trận chung kết sẽ được tổ chức tại MetLife Stadium (New York/New Jersey) - sân vận động lớn nhất giải đấu với sức chứa 82.500 khán giả.</p>
+    <h3>Format thi đấu mới</h3>
+    <p>World Cup 2026 áp dụng format mới so với các kỳ World Cup trước. 48 đội được chia thành 12 bảng, mỗi bảng 4 đội. Hai đội đứng đầu mỗi bảng cùng 8 đội xếp thứ 3 có thành tích tốt nhất sẽ vượt qua vòng bảng, tạo thành vòng đấu loại 32 đội. Sau đó là vòng 16, tứ kết, bán kết và chung kết.</p>
+    <h3>12 Bảng đấu World Cup 2026</h3>
+    <ul>${groupLinks}</ul>
+    <h3>Các đội tuyển nổi bật</h3>
+    <p>World Cup 2026 quy tụ những đội tuyển mạnh nhất thế giới. Argentina đến với tư cách đương kim vô địch, trong khi Brazil, Pháp, Anh, Đức và Tây Ban Nha là những ứng viên nặng ký cho chức vô địch.</p>
+    <ul>${teamLinks}</ul>
+    <h3>16 Sân vận động World Cup 2026</h3>
+    <p>World Cup 2026 sử dụng 16 sân vận động tại 16 thành phố: 11 sân tại Mỹ, 3 sân tại Mexico và 2 sân tại Canada. Tổng sức chứa vượt quá 1 triệu chỗ ngồi.</p>
+    <ul>${venueList}</ul>
+    <h3>Xem World Cup 2026 trực tiếp</h3>
+    <p>BongDa365 cung cấp tỉ số trực tiếp, bình luận AI, dự đoán tỉ số và thống kê chi tiết cho tất cả 104 trận đấu World Cup 2026. Theo dõi ngay để không bỏ lỡ bất kỳ khoảnh khắc nào!</p>
+    <nav><h3>Khám phá World Cup 2026</h3><ul>
+      <li><a href="${siteUrl}/world-cup-2026/lich-thi-dau">Lịch thi đấu World Cup 2026 (giờ Việt Nam)</a></li>
+      <li><a href="${siteUrl}/world-cup-2026/san-van-dong">Sân vận động World Cup 2026</a></li>
+      <li><a href="${siteUrl}/world-cup-2026/du-doan">Dự đoán AI World Cup 2026</a></li>
+    </ul></nav>
+    </article>`;
+    return seoHTML({
+      title: 'World Cup 2026 - Lịch Thi Đấu, Bảng Đấu, Kết Quả Trực Tiếp | BongDa365',
+      desc: 'Tất tần tật về FIFA World Cup 2026 tại Mỹ, Canada, Mexico. Lịch thi đấu 104 trận, 12 bảng đấu, 48 đội tuyển, 16 sân vận động. Dự đoán AI, tỉ số trực tiếp, bình luận tiếng Việt.',
+      url: '/world-cup-2026', body,
+      jsonLd: { '@context': 'https://schema.org', '@type': 'SportsEvent', name: 'FIFA World Cup 2026',
+        description: 'Giải vô địch bóng đá thế giới 2026 tại Mỹ, Canada và Mexico. 48 đội, 12 bảng, 104 trận.',
+        startDate: '2026-06-11', endDate: '2026-07-19', eventStatus: 'https://schema.org/EventScheduled',
+        location: [
+          { '@type': 'Place', name: 'MetLife Stadium', address: { '@type': 'PostalAddress', addressLocality: 'East Rutherford', addressRegion: 'NJ', addressCountry: 'US' } },
+          { '@type': 'Place', name: 'Estadio Azteca', address: { '@type': 'PostalAddress', addressLocality: 'Mexico City', addressCountry: 'MX' } },
+          { '@type': 'Place', name: 'BMO Field', address: { '@type': 'PostalAddress', addressLocality: 'Toronto', addressCountry: 'CA' } },
+        ],
+        organizer: { '@type': 'Organization', name: 'FIFA', url: 'https://www.fifa.com' },
+        sport: 'Football', url: siteUrl + '/world-cup-2026',
+      },
+    });
+  }
+
+  // Schedule: /world-cup-2026/lich-thi-dau
+  if (urlPath === '/world-cup-2026/lich-thi-dau') {
+    const scheduleRows = wc.schedule.map(m => {
+      const homeVi = wc.teamNameVi[m.home] || m.home;
+      const awayVi = wc.teamNameVi[m.away] || m.away;
+      return `<tr><td>${m.date}</td><td>${m.timeUTC7}</td><td>${wc.flags[m.home]||''} ${homeVi}</td><td>${wc.flags[m.away]||''} ${awayVi}</td><td>${m.stage}${m.group ? ' ' + m.group : ''}</td><td>${m.venue}</td></tr>`;
+    }).join('');
+    const body = `
+    <article>
+    <h2>Lịch thi đấu World Cup 2026 - Giờ Việt Nam (UTC+7)</h2>
+    <p>Lịch thi đấu đầy đủ 104 trận FIFA World Cup 2026 theo giờ Việt Nam (UTC+7). Giải đấu bắt đầu từ ngày 11/06/2026 với trận khai mạc tại Estadio Azteca (Mexico City) và kết thúc bằng trận chung kết ngày 19/07/2026 tại MetLife Stadium (New York).</p>
+    <h3>Các mốc thời gian quan trọng</h3>
+    <ul>
+      <li><strong>Vòng bảng:</strong> 11/06 - 28/06/2026 (3 lượt trận mỗi bảng)</li>
+      <li><strong>Vòng 32:</strong> 29/06 - 30/06/2026</li>
+      <li><strong>Vòng 16:</strong> 01/07 - 03/07/2026</li>
+      <li><strong>Tứ kết:</strong> 04/07 - 05/07/2026</li>
+      <li><strong>Bán kết:</strong> 08/07 - 09/07/2026</li>
+      <li><strong>Tranh hạng 3:</strong> 18/07/2026</li>
+      <li><strong>Chung kết:</strong> 19/07/2026</li>
+    </ul>
+    <h3>Lưu ý về múi giờ</h3>
+    <p>Do World Cup 2026 diễn ra tại Bắc Mỹ, các trận đấu sẽ bắt đầu vào buổi tối và đêm theo giờ Việt Nam. Hầu hết các trận đấu sẽ diễn ra từ 23:00 đến 08:00 sáng hôm sau (giờ Việt Nam). Đây là thời điểm khá khuya nhưng vẫn thuận lợi hơn so với World Cup tại Qatar 2022.</p>
+    <table><thead><tr><th>Ngày</th><th>Giờ VN</th><th>Đội nhà</th><th>Đội khách</th><th>Vòng</th><th>Sân</th></tr></thead>
+    <tbody>${scheduleRows}</tbody></table>
+    <p>Lịch thi đấu chi tiết sẽ được cập nhật sau khi FIFA công bố chính thức. Theo dõi BongDa365 để xem tỉ số trực tiếp và bình luận AI cho tất cả các trận.</p>
+    <nav><ul>
+      <li><a href="${siteUrl}/world-cup-2026">Trang chủ World Cup 2026</a></li>
+      <li><a href="${siteUrl}/world-cup-2026/du-doan">Dự đoán AI World Cup 2026</a></li>
+      <li><a href="${siteUrl}/world-cup-2026/san-van-dong">Sân vận động World Cup 2026</a></li>
+    </ul></nav>
+    </article>`;
+    const scheduleEvents = wc.schedule.slice(0, 10).map(m => ({
+      '@type': 'SportsEvent', name: `${m.home} vs ${m.away}`,
+      startDate: `${m.date}T${m.timeUTC7}:00+07:00`,
+      location: { '@type': 'Place', name: m.venue }, sport: 'Football',
+      superEvent: { '@type': 'SportsEvent', name: 'FIFA World Cup 2026' },
+    }));
+    return seoHTML({
+      title: 'Lịch Thi Đấu World Cup 2026 Giờ Việt Nam - 104 Trận Đầy Đủ | BongDa365',
+      desc: 'Lịch thi đấu World Cup 2026 theo giờ Việt Nam (UTC+7). Xem lịch 104 trận từ vòng bảng đến chung kết, cập nhật tỉ số trực tiếp, dự đoán AI.',
+      url: '/world-cup-2026/lich-thi-dau', body,
+      jsonLd: { '@context': 'https://schema.org', '@graph': scheduleEvents },
+    });
+  }
+
+  // Group pages: /world-cup-2026/bang/:groupLetter
+  const wcGrpMatch = urlPath.match(/^\/world-cup-2026\/bang\/([a-l])$/);
+  if (wcGrpMatch) {
+    const letter = wcGrpMatch[1].toUpperCase();
+    const group = wc.groups[letter];
+    if (group) {
+      const teamDetails = group.teams.map(t => {
+        const flag = wc.flags[t] || ''; const nameVi = wc.teamNameVi[t] || t;
+        const slugEntry = Object.entries(wc.teamProfiles).find(([, p]) => p.name === t);
+        const profile = slugEntry ? wc.teamProfiles[slugEntry[0]] : null;
+        let d = `<div><h4>${flag} ${nameVi}</h4>`;
+        if (profile) {
+          d += `<p>Xếp hạng FIFA: #${profile.fifaRank} | HLV: ${profile.coach} | Số lần dự World Cup: ${profile.wcAppearances}</p>`;
+          if (profile.wcTitles > 0) d += `<p>Vô địch World Cup: ${profile.wcTitles} lần (${profile.titleYears})</p>`;
+          d += `<p>Cầu thủ chủ chốt: ${profile.keyPlayers.join(', ')}</p>`;
+          d += `<p>${profile.descVi}</p>`;
+          d += `<p><a href="${siteUrl}/world-cup-2026/doi-tuyen/${slugEntry[0]}">Xem chi tiết đội tuyển ${nameVi}</a></p>`;
+        }
+        d += '</div>'; return d;
+      }).join('');
+      const groupMatches = wc.schedule.filter(m => m.group === letter).map(m => {
+        const homeVi = wc.teamNameVi[m.home] || m.home; const awayVi = wc.teamNameVi[m.away] || m.away;
+        return `<li>${m.date} ${m.timeUTC7} (giờ VN): ${wc.flags[m.home]||''} ${homeVi} vs ${wc.flags[m.away]||''} ${awayVi} - ${m.venue}</li>`;
+      }).join('');
+      const otherGroups = Object.keys(wc.groups).filter(g => g !== letter).map(g =>
+        `<a href="${siteUrl}/world-cup-2026/bang/${g.toLowerCase()}">Bảng ${g}</a>`).join(' | ');
+      const body = `
+      <article>
+      <h2>Bảng ${letter} World Cup 2026</h2>
+      <p>Bảng ${letter} World Cup 2026 gồm ${group.teams.filter(t=>t!=='TBD').join(', ')} và 1 đội sẽ được xác định qua vòng loại. Các trận đấu bảng ${letter} diễn ra chủ yếu tại ${group.venue}.</p>
+      <h3>Các đội trong Bảng ${letter}</h3>${teamDetails}
+      ${groupMatches ? `<h3>Lịch thi đấu Bảng ${letter}</h3><ul>${groupMatches}</ul>` : ''}
+      <h3>Phân tích Bảng ${letter}</h3>
+      <p>Bảng ${letter} hứa hẹn nhiều trận đấu hấp dẫn. Với format mới 2 đội đứng đầu bảng cùng các đội xếp thứ 3 có thành tích tốt nhất sẽ đi tiếp, cơ hội vượt qua vòng bảng rộng mở hơn cho tất cả các đội.</p>
+      <nav><h4>Các bảng đấu khác</h4><p>${otherGroups}</p>
+        <p><a href="${siteUrl}/world-cup-2026">Trang chủ World Cup 2026</a> | <a href="${siteUrl}/world-cup-2026/lich-thi-dau">Lịch thi đấu</a></p>
+      </nav></article>`;
+      return seoHTML({
+        title: `Bảng ${letter} World Cup 2026 - ${group.teams.filter(t=>t!=='TBD').join(', ')} | BongDa365`,
+        desc: `Bảng ${letter} World Cup 2026: ${group.teams.filter(t=>t!=='TBD').join(', ')}. Lịch đấu, đội hình, phân tích, dự đoán kết quả tại ${group.venue}.`,
+        url: `/world-cup-2026/bang/${letter.toLowerCase()}`, body,
+        jsonLd: { '@context': 'https://schema.org', '@type': 'SportsEvent',
+          name: `World Cup 2026 - Bảng ${letter}`, description: `Bảng ${letter}: ${group.teams.join(', ')}`,
+          startDate: '2026-06-11', location: { '@type': 'Place', name: group.venue },
+          superEvent: { '@type': 'SportsEvent', name: 'FIFA World Cup 2026' },
+          competitor: group.teams.filter(t=>t!=='TBD').map(t => ({ '@type': 'SportsTeam', name: t })),
+        },
+      });
+    }
+  }
+
+  // Team profiles: /world-cup-2026/doi-tuyen/:slug
+  const wcTmMatch = urlPath.match(/^\/world-cup-2026\/doi-tuyen\/([a-z-]+)$/);
+  if (wcTmMatch) {
+    const slug = wcTmMatch[1]; const team = wc.teamProfiles[slug];
+    if (team) {
+      const groupEntry = Object.entries(wc.groups).find(([, g]) => g.teams.includes(team.name));
+      const groupLetter = groupEntry ? groupEntry[0] : '';
+      const groupTeams = groupEntry ? groupEntry[1].teams : [];
+      const otherTeams = Object.entries(wc.teamProfiles).filter(([s]) => s !== slug).slice(0, 8).map(([s, t]) =>
+        `<li><a href="${siteUrl}/world-cup-2026/doi-tuyen/${s}">${t.flag} ${t.nameVi}</a></li>`).join('');
+      const body = `
+      <article>
+      <h2>${team.flag} ${team.nameVi} tại World Cup 2026</h2>
+      <p>${team.descVi}</p>
+      <h3>Thông tin đội tuyển ${team.nameVi}</h3>
+      <ul>
+        <li><strong>Tên tiếng Anh:</strong> ${team.name}</li>
+        <li><strong>Xếp hạng FIFA:</strong> #${team.fifaRank}</li>
+        <li><strong>Liên đoàn:</strong> ${team.confederation}</li>
+        <li><strong>Huấn luyện viên:</strong> ${team.coach}</li>
+        <li><strong>Số lần dự World Cup:</strong> ${team.wcAppearances}</li>
+        ${team.wcTitles > 0 ? `<li><strong>Vô địch World Cup:</strong> ${team.wcTitles} lần (${team.titleYears})</li>` : `<li><strong>Thành tích tốt nhất:</strong> Chưa vô địch</li>`}
+        ${groupLetter ? `<li><strong>Bảng đấu WC 2026:</strong> <a href="${siteUrl}/world-cup-2026/bang/${groupLetter.toLowerCase()}">Bảng ${groupLetter}</a> (${groupTeams.filter(t=>t!=='TBD').join(', ')})</li>` : ''}
+      </ul>
+      <h3>Cầu thủ chủ chốt</h3>
+      <ul>${team.keyPlayers.map(p => `<li>${p}</li>`).join('')}</ul>
+      <h3>Đội tuyển ${team.nameVi} tại các kỳ World Cup</h3>
+      <p>${team.nameVi} đã tham dự ${team.wcAppearances} kỳ World Cup trong lịch sử. ${team.wcTitles > 0 ? `Đội đã giành chức vô địch ${team.wcTitles} lần vào các năm ${team.titleYears}.` : 'Đội chưa từng vô địch World Cup nhưng luôn là đối thủ đáng gờm tại mọi giải đấu.'}</p>
+      <nav><h4>Các đội tuyển khác tại World Cup 2026</h4><ul>${otherTeams}</ul>
+        <p><a href="${siteUrl}/world-cup-2026">Trang chủ World Cup 2026</a> | <a href="${siteUrl}/world-cup-2026/lich-thi-dau">Lịch thi đấu</a></p>
+      </nav></article>`;
+      const faqItems = [
+        { q: `${team.nameVi} ở bảng nào tại World Cup 2026?`, a: groupLetter ? `${team.nameVi} nằm ở Bảng ${groupLetter} cùng với ${groupTeams.filter(t=>t!=='TBD'&&t!==team.name).join(', ')}.` : 'Bảng đấu sẽ được xác định sau lễ bốc thăm.' },
+        { q: `Ai là huấn luyện viên của đội tuyển ${team.nameVi}?`, a: `HLV hiện tại của ${team.nameVi} là ${team.coach}.` },
+        { q: `${team.nameVi} đã vô địch World Cup bao nhiêu lần?`, a: team.wcTitles > 0 ? `${team.nameVi} đã vô địch World Cup ${team.wcTitles} lần (${team.titleYears}).` : `${team.nameVi} chưa từng vô địch World Cup.` },
+      ];
+      return seoHTML({
+        title: `${team.nameVi} World Cup 2026 - Đội Hình, Lịch Đấu, Dự Đoán | BongDa365`,
+        desc: `Thông tin đội tuyển ${team.nameVi} tại World Cup 2026. FIFA #${team.fifaRank}, HLV ${team.coach}, ${team.wcAppearances} lần dự WC. Cầu thủ: ${team.keyPlayers.join(', ')}.`,
+        url: `/world-cup-2026/doi-tuyen/${slug}`, body,
+        jsonLd: { '@context': 'https://schema.org', '@graph': [
+          { '@type': 'SportsTeam', name: team.name, alternateName: team.nameVi, sport: 'Football',
+            coach: { '@type': 'Person', name: team.coach },
+            memberOf: { '@type': 'SportsOrganization', name: team.confederation },
+            athlete: team.keyPlayers.map(p => ({ '@type': 'Person', name: p })),
+          },
+          { '@type': 'FAQPage', mainEntity: faqItems.map(f => ({ '@type': 'Question', name: f.q, acceptedAnswer: { '@type': 'Answer', text: f.a } })) },
+        ]},
+      });
+    }
+  }
+
+  // Predictions: /world-cup-2026/du-doan
+  if (urlPath === '/world-cup-2026/du-doan') {
+    const topTeams = ['brazil', 'argentina', 'france', 'england', 'germany', 'spain'].map(slug => {
+      const t = wc.teamProfiles[slug];
+      return `<div><h4>${t.flag} ${t.nameVi}</h4><p>FIFA #${t.fifaRank} | ${t.wcTitles} lần vô địch WC | HLV: ${t.coach}</p><p>Cầu thủ ngôi sao: ${t.keyPlayers.join(', ')}</p></div>`;
+    }).join('');
+    const faqItems = [
+      { q: 'Đội nào được dự đoán vô địch World Cup 2026?', a: 'Brazil, Argentina, Pháp và Anh là 4 ứng viên hàng đầu cho chức vô địch World Cup 2026. Argentina có lợi thế là đương kim vô địch, trong khi Brazil sở hữu đội hình tấn công mạnh nhất với Vinícius Jr.' },
+      { q: 'World Cup 2026 có bao nhiêu đội?', a: 'World Cup 2026 có 48 đội tham dự, tăng từ 32 đội ở các kỳ trước. 48 đội được chia thành 12 bảng, mỗi bảng 4 đội.' },
+      { q: 'AI dự đoán kết quả World Cup 2026 như thế nào?', a: 'BongDa365 sử dụng thuật toán AI phân tích dữ liệu lịch sử, phong độ hiện tại, thống kê cầu thủ, và nhiều yếu tố khác để đưa ra dự đoán xác suất thắng/thua/hòa cho mỗi trận đấu.' },
+    ];
+    const body = `
+    <article>
+    <h2>Dự Đoán World Cup 2026 - AI Phân Tích</h2>
+    <p>BongDa365 sử dụng công nghệ AI tiên tiến để phân tích và dự đoán kết quả World Cup 2026. Hệ thống Ngựa Tiên Tri phân tích hàng triệu dữ liệu từ phong độ đội tuyển, thống kê cầu thủ, lịch sử đối đầu và nhiều yếu tố khác để đưa ra dự đoán chính xác nhất.</p>
+    <h3>Ứng viên vô địch World Cup 2026</h3>
+    <p>Dựa trên phân tích AI, đây là các đội tuyển có khả năng vô địch World Cup 2026 cao nhất:</p>
+    ${topTeams}
+    <h3>Phương pháp dự đoán</h3>
+    <p>Hệ thống AI của BongDa365 sử dụng nhiều mô hình machine learning kết hợp: phân tích xếp hạng Elo, mô hình Poisson cho số bàn thắng, phân tích hiệu suất cầu thủ tại câu lạc bộ, và đánh giá phong độ gần nhất. Kết quả dự đoán được cập nhật liên tục theo thời gian thực trong suốt giải đấu.</p>
+    <h3>Tham gia dự đoán</h3>
+    <p>Bạn cũng có thể tham gia dự đoán nhà vô địch World Cup 2026 tại BongDa365. Chọn đội bạn tin tưởng nhất và chia sẻ dự đoán với bạn bè!</p>
+    <nav><p><a href="${siteUrl}/world-cup-2026">Trang chủ World Cup 2026</a> | <a href="${siteUrl}/world-cup-2026/lich-thi-dau">Lịch thi đấu</a> | <a href="${siteUrl}/world-cup-2026/san-van-dong">Sân vận động</a></p></nav>
+    </article>`;
+    return seoHTML({
+      title: 'Dự Đoán World Cup 2026 - AI Phân Tích Ứng Viên Vô Địch | BongDa365',
+      desc: 'Dự đoán kết quả World Cup 2026 bằng AI. Phân tích ứng viên vô địch: Brazil, Argentina, Pháp, Anh. Xác suất thắng, dự đoán tỉ số từng trận.',
+      url: '/world-cup-2026/du-doan', body,
+      jsonLd: { '@context': 'https://schema.org', '@type': 'FAQPage',
+        mainEntity: faqItems.map(f => ({ '@type': 'Question', name: f.q, acceptedAnswer: { '@type': 'Answer', text: f.a } })),
+      },
+    });
+  }
+
+  // Venues: /world-cup-2026/san-van-dong
+  if (urlPath === '/world-cup-2026/san-van-dong') {
+    const byCountry = { 'USA': [], 'Canada': [], 'Mexico': [] };
+    wc.venues.forEach(v => { if (byCountry[v.country]) byCountry[v.country].push(v); });
+    const renderV = (venues, country) => venues.map(v =>
+      `<div><h4>${v.name} - ${v.city}</h4><p>Sức chứa: ${v.capacity.toLocaleString()} chỗ ngồi | Quốc gia: ${country}</p><p>${v.description}</p></div>`
+    ).join('');
+    const body = `
+    <article>
+    <h2>16 Sân Vận Động World Cup 2026</h2>
+    <p>FIFA World Cup 2026 sẽ được tổ chức tại 16 sân vận động nằm ở 16 thành phố thuộc 3 quốc gia: Mỹ (11 sân), Mexico (3 sân) và Canada (2 sân). Tổng sức chứa của các sân vận động vượt quá 1 triệu chỗ ngồi, với MetLife Stadium (New York) là sân lớn nhất nơi diễn ra trận chung kết.</p>
+    <h3>Sân vận động tại Mỹ (11 sân)</h3>${renderV(byCountry['USA'], 'Mỹ')}
+    <h3>Sân vận động tại Mexico (3 sân)</h3>${renderV(byCountry['Mexico'], 'Mexico')}
+    <h3>Sân vận động tại Canada (2 sân)</h3>${renderV(byCountry['Canada'], 'Canada')}
+    <h3>Sân vận động quan trọng nhất</h3>
+    <p><strong>MetLife Stadium</strong> (New York/New Jersey, 82.500 chỗ) sẽ tổ chức trận chung kết World Cup 2026 vào ngày 19/07/2026. <strong>Estadio Azteca</strong> (Mexico City, 87.523 chỗ) là sân có sức chứa lớn nhất và là sân duy nhất từng tổ chức 3 trận chung kết World Cup (1970, 1986, và 2026 khai mạc).</p>
+    <nav><p><a href="${siteUrl}/world-cup-2026">Trang chủ World Cup 2026</a> | <a href="${siteUrl}/world-cup-2026/lich-thi-dau">Lịch thi đấu</a> | <a href="${siteUrl}/world-cup-2026/du-doan">Dự đoán AI</a></p></nav>
+    </article>`;
+    return seoHTML({
+      title: '16 Sân Vận Động World Cup 2026 - Mỹ, Canada, Mexico | BongDa365',
+      desc: 'Danh sách 16 sân vận động World Cup 2026: MetLife Stadium, SoFi Stadium, Estadio Azteca, BMO Field. Sức chứa, vị trí, lịch sử từng sân.',
+      url: '/world-cup-2026/san-van-dong', body,
+      jsonLd: { '@context': 'https://schema.org', '@type': 'ItemList',
+        name: 'Sân vận động World Cup 2026', numberOfItems: wc.venues.length,
+        itemListElement: wc.venues.map((v, i) => ({
+          '@type': 'ListItem', position: i + 1,
+          item: { '@type': 'StadiumOrArena', name: v.name,
+            address: { '@type': 'PostalAddress', addressLocality: v.city, addressCountry: v.country },
+            maximumAttendeeCapacity: v.capacity, description: v.description },
+        })),
+      },
+    });
+  }
+
+  return null;
+}
+
 // ── SEO: Route-specific meta for bots ──
 function seoForPath(urlPath) {
   // Home / Live
   if (urlPath === '/' || urlPath === '/live') {
+    const homeFAQ = { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: [
+      { '@type': 'Question', name: 'BongDa365 là gì?', acceptedAnswer: { '@type': 'Answer', text: 'BongDa365 là trang web xem tỉ số trực tiếp bóng đá, dự đoán AI bằng Ngựa Tiên Tri, bình luận trực tiếp và chat cộng đồng.' } },
+      { '@type': 'Question', name: 'Ngựa Tiên Tri dự đoán chính xác bao nhiêu phần trăm?', acceptedAnswer: { '@type': 'Answer', text: 'Ngựa Tiên Tri sử dụng mô hình AI phân tích xG, phong độ, đối đầu để đưa ra dự đoán với độ chính xác cập nhật real-time.' } },
+      { '@type': 'Question', name: 'Làm sao để chơi dự đoán trên BongDa365?', acceptedAnswer: { '@type': 'Answer', text: 'Bạn chỉ cần chọn trận đấu, nhập tỉ số dự đoán và đặt xu. Đúng tỉ số chính xác nhận x5, đúng kết quả nhận x2.' } },
+      { '@type': 'Question', name: 'BongDa365 có miễn phí không?', acceptedAnswer: { '@type': 'Answer', text: 'Hoàn toàn miễn phí! Xem tỉ số, dự đoán, chat và bình luận AI đều không mất phí.' } },
+    ] };
     return seoHTML({
       title: 'BongDa365 - Tỉ Số Trực Tiếp Bóng Đá | Live Score',
       desc: 'Xem tỉ số trực tiếp bóng đá, dự đoán AI Ngựa Tiên Tri, chat live, xác suất real-time. Premier League, La Liga, Serie A, V-League và 500+ giải đấu.',
       url: '/',
-      jsonLd: { '@context': 'https://schema.org', '@type': 'WebSite', name: 'BongDa365', url: SITE_URL, description: 'Tỉ số trực tiếp bóng đá, dự đoán AI, chat live', potentialAction: { '@type': 'SearchAction', target: SITE_URL + '/search?q={search_term_string}', 'query-input': 'required name=search_term_string' } },
+      jsonLd: homeFAQ,
     });
   }
   // Schedule
@@ -111,7 +443,13 @@ function seoForPath(urlPath) {
           const score = ev.homeScore?.current != null ? `${ev.homeScore.current}-${ev.awayScore.current}` : 'vs';
           matchTitle = `${home} ${score} ${away} - Trực Tiếp | BongDa365`;
           matchDesc = `${home} vs ${away}: tỉ số trực tiếp, thống kê, đội hình, chat live, dự đoán AI Ngựa Tiên Tri.`;
-          matchJsonLd = { '@context': 'https://schema.org', '@type': 'SportsEvent', name: `${home} vs ${away}`, homeTeam: { '@type': 'SportsTeam', name: home }, awayTeam: { '@type': 'SportsTeam', name: away }, sport: 'Football' };
+          const startTime = ev.startTimestamp ? new Date(ev.startTimestamp * 1000).toISOString() : new Date().toISOString();
+          const statusCode = ev.status?.code;
+          let eventStatus = 'https://schema.org/EventScheduled';
+          if (statusCode === 6 || statusCode === 7 || statusCode === 100) eventStatus = 'https://schema.org/EventCancelled';
+          else if (statusCode === 31 || statusCode === 32) eventStatus = 'https://schema.org/EventPostponed';
+          const league = ev.tournament?.name || '';
+          matchJsonLd = { '@context': 'https://schema.org', '@type': 'SportsEvent', name: `${home} vs ${away}`, startDate: startTime, eventStatus, eventAttendanceMode: 'https://schema.org/OfflineEventAttendanceMode', homeTeam: { '@type': 'SportsTeam', name: home }, awayTeam: { '@type': 'SportsTeam', name: away }, sport: 'Football', description: `Xem tỉ số trực tiếp ${home} vs ${away}${league ? ' - ' + league : ''}. Thống kê, đội hình, dự đoán AI Ngựa Tiên Tri.`, location: { '@type': 'Place', name: ev.venue?.stadium || league || 'Sân vận động' }, competitor: [{ '@type': 'SportsTeam', name: home }, { '@type': 'SportsTeam', name: away }] };
         }
       } catch {}
     }
@@ -119,13 +457,18 @@ function seoForPath(urlPath) {
   }
   // Predictions
   if (urlPath === '/predictions') {
+    const predFAQ = { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: [
+      { '@type': 'Question', name: 'AI dự đoán bóng đá hoạt động như thế nào?', acceptedAnswer: { '@type': 'Answer', text: 'Ngựa Tiên Tri phân tích dữ liệu xG, thống kê trận đấu, phong độ gần đây, lợi thế sân nhà và tỉ lệ kèo để tính xác suất thắng/thua/hòa real-time.' } },
+      { '@type': 'Question', name: 'Dự đoán có được cập nhật trong trận không?', acceptedAnswer: { '@type': 'Answer', text: 'Có! Xác suất được cập nhật real-time mỗi khi có bàn thắng, thẻ đỏ, hoặc thay đổi thống kê quan trọng.' } },
+    ] };
     return seoHTML({
       title: 'Dự Đoán Bóng Đá AI - Xác Suất Real-Time | BongDa365',
       desc: 'Dự đoán tỉ số bóng đá bằng AI Ngựa Tiên Tri. Xác suất thắng/thua/hòa, tổng bàn thắng, BTTS cập nhật real-time.',
       url: '/predictions',
+      jsonLd: predFAQ,
     });
   }
-  // World Cup
+  // World Cup legacy route
   if (urlPath === '/worldcup') {
     return seoHTML({
       title: 'FIFA World Cup 2026 - Lịch Đấu, Bảng Đấu, Dự Đoán | BongDa365',
@@ -134,6 +477,13 @@ function seoForPath(urlPath) {
       jsonLd: { '@context': 'https://schema.org', '@type': 'SportsEvent', name: 'FIFA World Cup 2026', startDate: '2026-06-11', endDate: '2026-07-19', location: { '@type': 'Place', name: 'USA, Mexico, Canada' }, sport: 'Football' },
     });
   }
+
+  // ═══════════════════════════════════════════════════════════
+  //  WORLD CUP 2026 SEO CONTENT HUB
+  // ═══════════════════════════════════════════════════════════
+  const wcSeoPage = worldCupSeoHub(urlPath, SITE_URL, WC2026);
+  if (wcSeoPage) return wcSeoPage;
+
   // News listing
   if (urlPath === '/news') {
     const latest = newsEngine.getLatest(5);
@@ -163,9 +513,23 @@ function seoForPath(urlPath) {
         url: `/news/${article.id}`,
         image: article.imageUrl,
         body: bodyParagraphs + `<p class="news-source">Nguồn: ${article.source}</p>`,
-        jsonLd: { '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.titleVi || article.title, description: article.summaryVi || article.summary, articleBody, image: article.imageUrl || '', datePublished: new Date(article.pubDate).toISOString(), publisher: { '@type': 'Organization', name: 'BongDa365' }, mainEntityOfPage: `${SITE_URL}/news/${article.id}` },
+        jsonLd: { '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.titleVi || article.title, description: article.summaryVi || article.summary, articleBody, image: article.imageUrl ? [article.imageUrl] : [], datePublished: new Date(article.pubDate).toISOString(), dateModified: new Date(article.pubDate).toISOString(), author: { '@type': 'Organization', name: 'BongDa365', url: SITE_URL }, publisher: { '@type': 'Organization', name: 'BongDa365', url: SITE_URL, logo: { '@type': 'ImageObject', url: SITE_URL + '/logo.png' } }, mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/news/${article.id}` }, inLanguage: 'vi', isAccessibleForFree: true },
       });
     }
+  }
+  // Challenge (Thách Đấu Dự Đoán)
+  const challengeMatch = urlPath.match(/^\/challenge\/([a-z0-9_]+)$/);
+  if (challengeMatch) {
+    const ch = challenges.get(challengeMatch[1]);
+    const mi = ch?.matchInfo || {};
+    const creator = ch?.creatorName || 'Ai đó';
+    const home = mi.home || '?';
+    const away = mi.away || '?';
+    return seoHTML({
+      title: `⚔️ Thách Đấu Dự Đoán — ${home} vs ${away} | BongDa365`,
+      desc: `${creator} thách bạn dự đoán trận ${home} vs ${away}! Dám chơi không? Cược ${ch?.creatorBet || 100} xu.`,
+      url: `/challenge/${challengeMatch[1]}`,
+    });
   }
   return null; // Not a known SEO route
 }
@@ -186,6 +550,19 @@ function generateSitemap() {
   xml += `<url><loc>${SITE_URL}/predictions</loc><changefreq>hourly</changefreq><priority>0.8</priority></url>\n`;
   xml += `<url><loc>${SITE_URL}/schedule</loc><changefreq>daily</changefreq><priority>0.8</priority></url>\n`;
   xml += `<url><loc>${SITE_URL}/worldcup</loc><changefreq>daily</changefreq><priority>0.9</priority></url>\n`;
+  // World Cup 2026 SEO Hub
+  xml += `<url><loc>${SITE_URL}/world-cup-2026</loc><changefreq>daily</changefreq><priority>1.0</priority><lastmod>${today}</lastmod></url>\n`;
+  xml += `<url><loc>${SITE_URL}/world-cup-2026/lich-thi-dau</loc><changefreq>daily</changefreq><priority>0.9</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/world-cup-2026/du-doan</loc><changefreq>daily</changefreq><priority>0.8</priority></url>\n`;
+  xml += `<url><loc>${SITE_URL}/world-cup-2026/san-van-dong</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>\n`;
+  // WC2026 Group pages (A-L)
+  for (const g of 'abcdefghijkl'.split('')) {
+    xml += `<url><loc>${SITE_URL}/world-cup-2026/bang/${g}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>\n`;
+  }
+  // WC2026 Team profile pages
+  for (const slug of Object.keys(WC2026.teamProfiles)) {
+    xml += `<url><loc>${SITE_URL}/world-cup-2026/doi-tuyen/${slug}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>\n`;
+  }
   xml += `<url><loc>${SITE_URL}/privacy</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n`;
   xml += `<url><loc>${SITE_URL}/terms</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n`;
   // Leagues
@@ -211,7 +588,7 @@ function generateSitemap() {
   return xml;
 }
 
-const ROBOTS_TXT = `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${SITE_URL}/sitemap.xml\n`;
+const ROBOTS_TXT = `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${SITE_URL}/sitemap.xml\n\n# RSS Feed\n# ${SITE_URL}/feed.xml\n`;
 
 // ── Static Pages ──
 function privacyPage() {
@@ -260,7 +637,7 @@ function getApiCacheTTL(url) {
 // ── HTTP Server ──
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
@@ -282,6 +659,100 @@ const server = http.createServer(async (req, res) => {
     };
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(status, null, 2));
+    return;
+  }
+
+  // ── Challenge API ──
+  // POST /api/challenge — create a new challenge
+  if (req.url === '/api/challenge' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      if (!body.matchId || !body.creatorName || !body.prediction || !body.bet) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Thiếu thông tin thách đấu' }));
+        return;
+      }
+      const id = generateChallengeId();
+      const challenge = {
+        id,
+        matchId: body.matchId,
+        creatorName: String(body.creatorName).slice(0, 20),
+        creatorPrediction: { home: parseInt(body.prediction.home) || 0, away: parseInt(body.prediction.away) || 0 },
+        creatorBet: parseInt(body.bet) || 100,
+        challengerName: null,
+        challengerPrediction: null,
+        challengerBet: null,
+        status: 'pending',
+        result: null,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 24 * 3600000,
+        matchInfo: body.matchInfo || {},
+      };
+      challenges.set(id, challenge);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id, shareUrl: `${SITE_URL}/challenge/${id}` }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dữ liệu không hợp lệ' }));
+    }
+    return;
+  }
+
+  // GET /api/challenge/:id — get challenge data
+  const challengeGetMatch = req.url.match(/^\/api\/challenge\/([a-z0-9_]+)$/);
+  if (challengeGetMatch && req.method === 'GET') {
+    const ch = challenges.get(challengeGetMatch[1]);
+    if (!ch) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Thách đấu không tồn tại' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(ch));
+    return;
+  }
+
+  // POST /api/challenge/:id/accept — accept a challenge
+  const challengeAcceptMatch = req.url.match(/^\/api\/challenge\/([a-z0-9_]+)\/accept$/);
+  if (challengeAcceptMatch && req.method === 'POST') {
+    try {
+      const ch = challenges.get(challengeAcceptMatch[1]);
+      if (!ch) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Thách đấu không tồn tại' }));
+        return;
+      }
+      if (ch.status !== 'pending') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Thách đấu đã được chấp nhận hoặc kết thúc' }));
+        return;
+      }
+      if (Date.now() > ch.expiresAt) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Thách đấu đã hết hạn' }));
+        return;
+      }
+      const body = await readBody(req);
+      if (!body.challengerName || !body.prediction) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Thiếu thông tin' }));
+        return;
+      }
+      if (String(body.challengerName).slice(0, 20) === ch.creatorName) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Không thể thách đấu chính mình!' }));
+        return;
+      }
+      ch.challengerName = String(body.challengerName).slice(0, 20);
+      ch.challengerPrediction = { home: parseInt(body.prediction.home) || 0, away: parseInt(body.prediction.away) || 0 };
+      ch.challengerBet = parseInt(body.bet) || ch.creatorBet;
+      ch.status = 'accepted';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(ch));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dữ liệu không hợp lệ' }));
+    }
     return;
   }
 
@@ -550,6 +1021,38 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── SEO: RSS feed for Google Publisher Center ──
+  if (req.url === '/feed.xml' || req.url === '/rss') {
+    const articles = newsEngine.getLatest(20);
+    const now = new Date().toUTCString();
+    let rss = `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">\n<channel>\n`;
+    rss += `<title>BongDa365 - Tin Tức Bóng Đá</title>\n`;
+    rss += `<link>${SITE_URL}</link>\n`;
+    rss += `<description>Cập nhật tin tức bóng đá mới nhất: chuyển nhượng, chấn thương, trước trận, kết quả.</description>\n`;
+    rss += `<language>vi</language>\n`;
+    rss += `<lastBuildDate>${now}</lastBuildDate>\n`;
+    rss += `<atom:link href="${SITE_URL}/feed.xml" rel="self" type="application/rss+xml"/>\n`;
+    rss += `<image><url>${SITE_URL}/logo.png</url><title>BongDa365</title><link>${SITE_URL}</link></image>\n`;
+    for (const a of articles) {
+      const pubDate = new Date(a.pubDate).toUTCString();
+      const titleEsc = (a.titleVi || a.title || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const descEsc = (a.summaryVi || a.summary || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      rss += `<item>\n`;
+      rss += `<title>${titleEsc}</title>\n`;
+      rss += `<link>${SITE_URL}/news/${a.id}</link>\n`;
+      rss += `<guid isPermaLink="true">${SITE_URL}/news/${a.id}</guid>\n`;
+      rss += `<pubDate>${pubDate}</pubDate>\n`;
+      rss += `<description>${descEsc}</description>\n`;
+      if (a.imageUrl) rss += `<media:content url="${a.imageUrl}" medium="image"/>\n`;
+      if (a.category) rss += `<category>${a.category}</category>\n`;
+      rss += `</item>\n`;
+    }
+    rss += `</channel>\n</rss>`;
+    res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8', 'Cache-Control': 'public, max-age=600' });
+    res.end(rss);
+    return;
+  }
+
   // ── SEO: sitemap.xml ──
   if (req.url === '/sitemap.xml') {
     res.writeHead(200, { 'Content-Type': 'application/xml', 'Cache-Control': 'public, max-age=3600' });
@@ -605,6 +1108,30 @@ bus.on('kickoff', d => {
   }
 });
 
+// ── War Room Auto-Polls on match events ──
+bus.on('goal', d => {
+  if (!d.matchId || !d.home || !d.away) return;
+  createPollForMatch(String(d.matchId), 'Ai sẽ ghi bàn tiếp theo?', [d.home, d.away, 'Không có bàn nữa']);
+});
+
+bus.on('halftime', d => {
+  if (!d.matchId || !d.home || !d.away) return;
+  createPollForMatch(String(d.matchId), 'Kết quả cuối trận sẽ thế nào?', [`${d.home} thắng`, 'Hòa', `${d.away} thắng`]);
+});
+
+bus.on('fulltime', d => {
+  if (!d.matchId) return;
+  // Start MVP voting with team names as default candidates
+  if (d.home && d.away) {
+    const mid = String(d.matchId);
+    if (!mvpVotes.has(mid)) mvpVotes.set(mid, new Map());
+    // Auto-create candidates from goal scorers if available, else use team names
+    io.to(`match_${mid}`).emit('mvp_started', { matchId: mid, candidates: [] });
+  }
+  // Cleanup polls for this match
+  activePolls.delete(String(d.matchId));
+});
+
 bus.on('fulltime', d => {
   if (!d.matchId) return;
   socialProof.total++;
@@ -616,6 +1143,53 @@ bus.on('fulltime', d => {
     if (predWinner === actual) socialProof.correct++;
   }
   analyzedMatches.delete(d.matchId);
+  // Clean up War Room data after some delay (let MVP voting continue for a while)
+  setTimeout(() => cleanupWarRoom(String(d.matchId)), 30 * 60 * 1000);
+
+  // ── Challenge Settlement ──
+  if (d.score) {
+    const actualHome = d.score.home;
+    const actualAway = d.score.away;
+    for (const [, ch] of challenges) {
+      if (ch.matchId != d.matchId || ch.status !== 'accepted') continue;
+      // Score each prediction: exact=3, correct result=1, wrong=0
+      function scoreChallengePred(p) {
+        if (p.home === actualHome && p.away === actualAway) return 3;
+        const pRes = Math.sign(p.home - p.away);
+        const aRes = Math.sign(actualHome - actualAway);
+        return pRes === aRes ? 1 : 0;
+      }
+      const creatorScore = scoreChallengePred(ch.creatorPrediction);
+      const challengerScore = scoreChallengePred(ch.challengerPrediction);
+      const totalPool = ch.creatorBet + ch.challengerBet;
+      let winner = null, loserName = null, payout = 0;
+      if (creatorScore > challengerScore) {
+        winner = ch.creatorName;
+        loserName = ch.challengerName;
+        payout = totalPool;
+      } else if (challengerScore > creatorScore) {
+        winner = ch.challengerName;
+        loserName = ch.creatorName;
+        payout = totalPool;
+      } else {
+        // Draw: refund both
+        payout = 0;
+      }
+      ch.status = 'settled';
+      ch.result = { winner, loserName, payout, actualScore: { home: actualHome, away: actualAway } };
+      // Emit challenge result to all connected clients
+      io.emit('challenge_result', {
+        challengeId: ch.id,
+        matchId: ch.matchId,
+        creatorName: ch.creatorName,
+        challengerName: ch.challengerName,
+        winner,
+        loserName,
+        payout,
+        actualScore: { home: actualHome, away: actualAway },
+      });
+    }
+  }
 });
 
 function getSocialProof() {
@@ -639,6 +1213,26 @@ function getLeaderboardTop() {
 
 function broadcastLeaderboard() {
   io.emit('leaderboard', { leaderboard: getLeaderboardTop() });
+}
+
+// ── War Room: Polls & MVP ──
+const activePolls = new Map();   // matchId -> { id, matchId, question, options, votes[] }
+const mvpVotes = new Map();      // matchId -> Map(playerId -> { name, votes })
+const reactionStorm = new Map(); // matchId -> { emoji -> timestamps[] }
+let pollIdCounter = 0;
+
+function createPollForMatch(matchId, question, options) {
+  const id = 'poll_' + (++pollIdCounter);
+  const poll = { id, matchId, question, options, votes: new Array(options.length).fill(0) };
+  activePolls.set(matchId, poll);
+  io.to(`match_${matchId}`).emit('poll_created', { poll });
+  return poll;
+}
+
+function cleanupWarRoom(matchId) {
+  activePolls.delete(matchId);
+  mvpVotes.delete(matchId);
+  reactionStorm.delete(matchId);
 }
 
 // ── Socket.io ──
@@ -694,6 +1288,56 @@ io.on('connection', socket => {
   socket.on('reaction', data => {
     if (!data.matchId || !data.emoji) return;
     io.to(`match_${data.matchId}`).emit('reaction', { emoji: data.emoji, ts: Date.now() });
+    // Storm detection: track per-match emoji bursts
+    const mid = String(data.matchId);
+    if (!reactionStorm.has(mid)) reactionStorm.set(mid, {});
+    const tracker = reactionStorm.get(mid);
+    const emoji = data.emoji;
+    if (!tracker[emoji]) tracker[emoji] = [];
+    const now = Date.now();
+    tracker[emoji].push(now);
+    tracker[emoji] = tracker[emoji].filter(t => now - t < 5000);
+    if (tracker[emoji].length >= 10) {
+      io.to(`match_${mid}`).emit('reaction_storm', { emoji, count: tracker[emoji].length });
+      tracker[emoji] = []; // reset after storm
+    }
+  });
+
+  // ── War Room: Polls ──
+  socket.on('poll_create', data => {
+    if (!data.matchId || !data.question || !Array.isArray(data.options)) return;
+    if (data.options.length < 2 || data.options.length > 6) return;
+    createPollForMatch(data.matchId, data.question, data.options);
+  });
+
+  socket.on('poll_vote', data => {
+    if (!data.matchId || !data.pollId || data.option == null) return;
+    const poll = activePolls.get(String(data.matchId));
+    if (!poll || poll.id !== data.pollId) return;
+    if (data.option < 0 || data.option >= poll.options.length) return;
+    poll.votes[data.option]++;
+    io.to(`match_${data.matchId}`).emit('poll_update', { poll });
+  });
+
+  // ── War Room: MVP Voting ──
+  socket.on('mvp_vote', data => {
+    if (!data.matchId || !data.playerId || !data.playerName) return;
+    const mid = String(data.matchId);
+    if (!mvpVotes.has(mid)) mvpVotes.set(mid, new Map());
+    const votes = mvpVotes.get(mid);
+    const entry = votes.get(String(data.playerId)) || { id: data.playerId, name: data.playerName, votes: 0 };
+    entry.votes++;
+    votes.set(String(data.playerId), entry);
+    const candidates = [...votes.values()];
+    io.to(`match_${mid}`).emit('mvp_update', { matchId: mid, candidates });
+  });
+
+  // Send active war room data when joining a match
+  socket.on('join_match', matchId => {
+    const poll = activePolls.get(String(matchId));
+    if (poll) socket.emit('poll_created', { poll });
+    const votes = mvpVotes.get(String(matchId));
+    if (votes && votes.size) socket.emit('mvp_started', { matchId: String(matchId), candidates: [...votes.values()] });
   });
 
   // ── Prediction Leaderboard (Sprint 7) ──
@@ -705,6 +1349,18 @@ io.on('connection', socket => {
     if (data.points === 3) entry.exact++;
     else if (data.points === 1) entry.correct++;
     else entry.wrong++;
+    predLeaderboard.set(user, entry);
+    broadcastLeaderboard();
+  });
+
+  // ── Coin System (Sprint 8) ──
+  socket.on('coin_update', data => {
+    if (!data?.user || data.coins == null) return;
+    const user = String(data.user).slice(0, 20);
+    const entry = predLeaderboard.get(user) || { user, score: 0, exact: 0, correct: 0, wrong: 0 };
+    entry.coins = data.coins || 0;
+    entry.totalWon = data.totalWon || 0;
+    entry.accuracy = data.accuracy || 0;
     predLeaderboard.set(user, entry);
     broadcastLeaderboard();
   });
@@ -722,6 +1378,33 @@ bus.on('*', event => {
   }
   // Also broadcast to all for live page
   io.emit('live_event', event);
+
+  // Push notification events (broadcast to all connected clients)
+  const d = event.data;
+  if (d && event.type === 'goal') {
+    io.emit('push_goal', {
+      matchId: d.matchId, scorer: d.player,
+      homeTeam: d.home, awayTeam: d.away,
+      homeScore: d.score?.home, awayScore: d.score?.away,
+      minute: d.minute, homeId: d.homeId, awayId: d.awayId,
+    });
+  } else if (d && event.type === 'red_card') {
+    io.emit('push_redcard', {
+      matchId: d.matchId, player: d.player, team: d.team,
+      minute: d.minute, homeId: d.homeId, awayId: d.awayId,
+    });
+  } else if (d && event.type === 'kickoff') {
+    io.emit('push_kickoff', {
+      matchId: d.matchId, homeTeam: d.home, awayTeam: d.away,
+      homeId: d.homeId, awayId: d.awayId,
+    });
+  } else if (d && event.type === 'fulltime') {
+    io.emit('push_fulltime', {
+      matchId: d.matchId, homeTeam: d.home, awayTeam: d.away,
+      homeScore: d.score?.home, awayScore: d.score?.away,
+      homeId: d.homeId, awayId: d.awayId,
+    });
+  }
 });
 
 // Commentary -> Socket.io

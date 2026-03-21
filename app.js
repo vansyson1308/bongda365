@@ -8,6 +8,13 @@ const app = {
   liveMatches: [], // cached for ticker
 
   init() {
+    // Handle clean URL → hash redirect (for shared challenge links)
+    const cleanPath = window.location.pathname;
+    if (cleanPath.startsWith('/challenge/')) {
+      window.location.replace('/#' + cleanPath);
+      return;
+    }
+
     this.setupHeader();
     this.setupSearch();
     sidebar.init();
@@ -89,7 +96,14 @@ const app = {
     router.register('/news', () => this.pageNews());
     router.register('/news/([^/]+)', (id) => this.pageNewsDetail(id));
     router.register('/worldcup', () => this.pageWorldCup());
+    router.register('/world-cup-2026', () => this.pageWorldCup2026());
+    router.register('/world-cup-2026/lich-thi-dau', () => this.pageWorldCup2026('schedule'));
+    router.register('/world-cup-2026/bang/([^/]+)', (g) => this.pageWorldCup2026('group', g));
+    router.register('/world-cup-2026/doi-tuyen/([^/]+)', (s) => this.pageWorldCup2026('team', s));
+    router.register('/world-cup-2026/du-doan', () => this.pageWorldCup2026('predictions'));
+    router.register('/world-cup-2026/san-van-dong', () => this.pageWorldCup2026('venues'));
     router.register('/search', () => this.pageSearch());
+    router.register('/challenge/([^/]+)', (id) => challengeSystem.loadChallenge(id));
   },
 
   // SEO: Update page title dynamically
@@ -293,6 +307,9 @@ const app = {
     const el = document.getElementById('page-content');
     el.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Đang tải trận đấu...</p></div>';
 
+    // Track interaction for push notification prompt
+    if (typeof pushNotifications !== 'undefined') pushNotifications.trackInteraction();
+
     // Clear chat & commentary
     const chatEl = document.getElementById('chatMessages');
     const commEl = document.getElementById('commentaryFeed');
@@ -421,6 +438,7 @@ const app = {
       { id: 'shotmap', label: 'Sút', show: !!(shotmap?.shotmap?.length) },
       { id: 'h2h', label: 'Đối đầu', show: !!h2h },
       { id: 'odds', label: 'Kèo', show: odds.length > 0 },
+      { id: 'warroom', label: 'War Room', show: true },
     ];
 
     html += `<div class="detail-tabs">${tabs.filter(t => t.show).map((t, i) =>
@@ -481,6 +499,11 @@ const app = {
       html += '</div>';
     }
 
+    // War Room tab
+    html += `<div id="mtab-warroom" class="tab-panel" style="display:none">
+      <div id="warRoomContainer" data-match-id="${m?.id || ''}"></div>
+    </div>`;
+
     return html;
   },
 
@@ -490,6 +513,14 @@ const app = {
     btn.closest('.content-area')?.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
     const target = document.getElementById(id);
     if (target) target.style.display = 'block';
+    // Initialize War Room when tab is opened
+    if (id === 'mtab-warroom' && typeof warRoom !== 'undefined' && warRoom) {
+      const container = document.getElementById('warRoomContainer');
+      if (container) {
+        const matchId = container.dataset.matchId || chat.currentMatch;
+        warRoom.renderWarRoom(container, matchId, this._currentMatchData || null);
+      }
+    }
   },
 
   // ═══════════════════════════════════════
@@ -1102,6 +1133,9 @@ const app = {
     this.setTitle('Dự Đoán & Phân Tích AI');
     this.showPanel(false);
     const el = document.getElementById('page-content');
+
+    // Track interaction for push notification prompt
+    if (typeof pushNotifications !== 'undefined') pushNotifications.trackInteraction();
     el.innerHTML = '<div class="page-header"><h2>🎯 Dự Đoán & Phân Tích</h2></div><div id="predLeaderboard"></div><div id="predContent"><div class="loading-state"><div class="spinner"></div><p>Đang phân tích...</p></div></div>';
 
     try {
@@ -1205,6 +1239,41 @@ const app = {
       el.innerHTML = worldcup.render();
     } else {
       el.innerHTML = this._empty('🏆', 'World Cup 2026 - Sắp ra mắt!');
+    }
+  },
+
+  // ═══════════════════════════════════════
+  //  WORLD CUP 2026 CONTENT HUB (client)
+  // ═══════════════════════════════════════
+  pageWorldCup2026(section, param) {
+    this.showPanel(false);
+    const el = document.getElementById('page-content');
+    if (typeof worldcup === 'undefined') {
+      el.innerHTML = this._empty('🏆', 'World Cup 2026 - Sắp ra mắt!');
+      return;
+    }
+
+    if (!section || section === 'hub') {
+      this.setTitle('World Cup 2026 - Lịch Thi Đấu, Bảng Đấu, Dự Đoán');
+      el.innerHTML = worldcup.renderHub();
+    } else if (section === 'schedule') {
+      this.setTitle('Lịch Thi Đấu World Cup 2026');
+      el.innerHTML = worldcup.renderSchedule();
+    } else if (section === 'group') {
+      const letter = (param || 'a').toUpperCase();
+      this.setTitle(`Bảng ${letter} World Cup 2026`);
+      el.innerHTML = worldcup.renderGroup(letter);
+    } else if (section === 'team') {
+      this.setTitle(`${param} - World Cup 2026`);
+      el.innerHTML = worldcup.renderTeam(param);
+    } else if (section === 'predictions') {
+      this.setTitle('Dự Đoán World Cup 2026');
+      el.innerHTML = worldcup.renderPredictions();
+    } else if (section === 'venues') {
+      this.setTitle('Sân Vận Động World Cup 2026');
+      el.innerHTML = worldcup.renderVenues();
+    } else {
+      el.innerHTML = worldcup.renderHub();
     }
   },
 

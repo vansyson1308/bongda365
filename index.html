@@ -7,8 +7,9 @@
   <meta name="description" content="Xem tỉ số trực tiếp bóng đá, dự đoán AI Ngựa Tiên Tri, chat live, xác suất real-time. Premier League, La Liga, Serie A, V-League và 500+ giải đấu.">
   <meta name="keywords" content="tỉ số trực tiếp, kết quả bóng đá, live score, bóng đá trực tuyến, dự đoán bóng đá, xác suất, premier league, la liga, v-league, world cup 2026">
   <meta name="author" content="BongDa365">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="index, follow, max-image-preview:large">
   <link rel="canonical" href="https://bongda365.xyz/">
+  <link rel="alternate" type="application/rss+xml" title="BongDa365 - Tin Tức Bóng Đá" href="https://bongda365.xyz/feed.xml">
   <!-- Open Graph -->
   <meta property="og:title" content="BongDa365 - Tỉ Số Trực Tiếp Bóng Đá">
   <meta property="og:description" content="Tỉ số trực tiếp, dự đoán AI Ngựa Tiên Tri, chat live, xác suất real-time cho 500+ giải đấu.">
@@ -28,6 +29,7 @@
   <meta name="apple-mobile-web-app-title" content="BongDa365">
   <!-- Structured Data -->
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"BongDa365","url":"https://bongda365.xyz","description":"Tỉ số trực tiếp bóng đá, dự đoán AI, chat live","potentialAction":{"@type":"SearchAction","target":"https://bongda365.xyz/#/search?q={search_term_string}","query-input":"required name=search_term_string"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"BongDa365","url":"https://bongda365.xyz","logo":"https://bongda365.xyz/logo.png","sameAs":[],"description":"Trang web xem tỉ số trực tiếp bóng đá, dự đoán AI, bình luận và cộng đồng"}</script>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -92,6 +94,8 @@
         </div>
         <!-- AD: Right Panel -->
         <div class="ad-slot ad-rectangle" id="adRightPanel" data-ad-slot="right-panel"></div>
+        <!-- Geo-targeted Affiliate -->
+        <div data-affiliate="sidebar"></div>
         <!-- Chat -->
         <div class="panel-section">
           <h3 class="panel-title">💬 Chat</h3>
@@ -125,6 +129,11 @@
     </aside>
   </div>
 
+  <!-- Geo-targeted Affiliate (below content) -->
+  <div style="max-width:728px;margin:0 auto;padding:0 16px">
+    <div data-affiliate="footer-banner"></div>
+  </div>
+
   <!-- ═══ FOOTER ═══ -->
   <footer class="footer">
     <div class="container">
@@ -155,11 +164,15 @@
   <script src="api.js"></script>
   <script src="router.js"></script>
   <script src="favourites.js"></script>
+  <script src="push-notifications.js"></script>
   <script src="sidebar.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="chat.js"></script>
+  <script src="warroom.js"></script>
   <script src="prediction-game.js"></script>
+  <script src="challenge.js"></script>
   <script src="worldcup.js"></script>
   <script src="app.js"></script>
+  <script src="geo-affiliate.js"></script>
 </body>
 </html>

@@ -13,7 +13,19 @@ class CommentaryEngine {
     this.commentaryLog = new Map(); // matchId -> [{text, priority, ts}]
     this.matchContext = new Map(); // matchId -> { context narrative, standings info }
     this.matchIncidentSummary = new Map(); // matchId -> { goals, cards, subs, penalties }
+    this.activeStyle = new Map(); // matchId -> style ('mascot' | 'blv_bien_cuong' | 'blv_anh_quan' | 'blv_quang_huy')
     this.onCommentary = null; // callback to broadcast
+  }
+
+  // Set commentary style for a match (persists per session)
+  setStyle(matchId, style = 'mascot') {
+    const validStyles = ['mascot', 'blv_bien_cuong', 'blv_anh_quan', 'blv_quang_huy'];
+    if (!validStyles.includes(style)) style = 'mascot';
+    this.activeStyle.set(matchId, style);
+  }
+
+  getStyle(matchId) {
+    return this.activeStyle.get(matchId) || 'mascot';
   }
 
   start(broadcastFn) {
@@ -60,35 +72,45 @@ class CommentaryEngine {
     const { matchId, teamName, minute, score, prevScore, home, away } = d;
     const total = score.home + score.away;
     const diff = Math.abs(score.home - score.away);
-    const templates = [];
+    const style = this.getStyle(matchId);
 
-    if (minute >= 85) {
+    // Use BLV template if BLV style is active
+    if (voice.isBLVStyle(style)) {
+      const text = voice.getBLVTemplate(style, 'goal', {
+        teamName, minute, home, away, scoreHome: score.home, scoreAway: score.away,
+      });
+      this._emit(matchId, text, 'critical', 'goal');
+    } else {
+      const templates = [];
+
+      if (minute >= 85) {
+        templates.push(
+          `⚡ BÀN THẮNG PHÚT CUỐI! ${teamName} ghi bàn phút ${minute}! Kịch tính đến phút chót!`,
+          `🔥 DRAMA! ${teamName} phá vỡ thế bế tắc ở phút ${minute}! ${home} ${score.home}-${score.away} ${away}`,
+        );
+      } else if (minute <= 5) {
+        templates.push(
+          `⚡ BÀN MỞ TỈ SỐ CHỚP NHOÁNG! ${teamName} ghi bàn chỉ sau ${minute} phút!`,
+        );
+      }
+
+      if (diff === 0) {
+        templates.push(`⚽ GỠ HÒA! ${teamName} cân bằng tỉ số ${score.home}-${score.away} ở phút ${minute}!`);
+      } else if (diff >= 3) {
+        templates.push(`⚽ ${teamName} nhấn chìm đối thủ! ${home} ${score.home}-${score.away} ${away}. Cách biệt ${diff} bàn!`);
+      }
+
+      if (total >= 4) {
+        templates.push(`🎯 Trận đấu mưa bàn thắng! Đã có ${total} bàn thắng trong trận!`);
+      }
+
       templates.push(
-        `⚡ BÀN THẮNG PHÚT CUỐI! ${teamName} ghi bàn phút ${minute}! Kịch tính đến phút chót!`,
-        `🔥 DRAMA! ${teamName} phá vỡ thế bế tắc ở phút ${minute}! ${home} ${score.home}-${score.away} ${away}`,
+        `⚽ BÀÀÀN THẮNG! ${teamName} nâng tỉ số lên ${score.home}-${score.away} ở phút ${minute}!`,
+        `⚽ VÀO! ${home} ${score.home}-${score.away} ${away} (${minute}')`,
       );
-    } else if (minute <= 5) {
-      templates.push(
-        `⚡ BÀN MỞ TỈ SỐ CHỚP NHOÁNG! ${teamName} ghi bàn chỉ sau ${minute} phút!`,
-      );
+
+      this._emit(matchId, this._pick(templates), 'critical', 'goal');
     }
-
-    if (diff === 0) {
-      templates.push(`⚽ GỠ HÒA! ${teamName} cân bằng tỉ số ${score.home}-${score.away} ở phút ${minute}!`);
-    } else if (diff >= 3) {
-      templates.push(`⚽ ${teamName} nhấn chìm đối thủ! ${home} ${score.home}-${score.away} ${away}. Cách biệt ${diff} bàn!`);
-    }
-
-    if (total >= 4) {
-      templates.push(`🎯 Trận đấu mưa bàn thắng! Đã có ${total} bàn thắng trong trận!`);
-    }
-
-    templates.push(
-      `⚽ BÀÀÀN THẮNG! ${teamName} nâng tỉ số lên ${score.home}-${score.away} ở phút ${minute}!`,
-      `⚽ VÀO! ${home} ${score.home}-${score.away} ${away} (${minute}')`,
-    );
-
-    this._emit(matchId, this._pick(templates), 'critical', 'goal');
 
     // Track for smart summary
     const summary = this.matchIncidentSummary.get(matchId);
@@ -113,9 +135,16 @@ class CommentaryEngine {
 
   _onRedCard(d) {
     const { matchId, team, player, minute, home, away } = d;
-    this._emit(matchId,
-      `🟥 THẺ ĐỎ! ${player} (${team}) bị đuổi khỏi sân ở phút ${minute}! ${team} phải chơi thiếu người! Xác suất thắng giảm ~20%.`,
-      'critical', 'red_card');
+    const style = this.getStyle(matchId);
+
+    if (voice.isBLVStyle(style)) {
+      const text = voice.getBLVTemplate(style, 'red_card', { player, team, minute, home, away });
+      this._emit(matchId, text, 'critical', 'red_card');
+    } else {
+      this._emit(matchId,
+        `🟥 THẺ ĐỎ! ${player} (${team}) bị đuổi khỏi sân ở phút ${minute}! ${team} phải chơi thiếu người! Xác suất thắng giảm ~20%.`,
+        'critical', 'red_card');
+    }
 
     // Track for smart summary
     const summary = this.matchIncidentSummary.get(matchId);
@@ -135,7 +164,14 @@ class CommentaryEngine {
   _onCard(d) {
     if (d.cardType === 'red' || d.cardType === 'yellowred') return; // handled by red_card
     const { matchId, team, player, minute } = d;
-    this._emit(matchId, `🟨 ${player} (${team}) nhận thẻ vàng phút ${minute}.`, 'low', 'card');
+    const style = this.getStyle(matchId);
+
+    if (voice.isBLVStyle(style)) {
+      const text = voice.getBLVTemplate(style, 'card', { player, team, minute });
+      this._emit(matchId, text, 'low', 'card');
+    } else {
+      this._emit(matchId, `🟨 ${player} (${team}) nhận thẻ vàng phút ${minute}.`, 'low', 'card');
+    }
 
     // Track for smart summary
     const summary = this.matchIncidentSummary.get(matchId);
@@ -146,21 +182,39 @@ class CommentaryEngine {
 
   _onHalftime(d) {
     const { matchId, home, away, score } = d;
-    const total = score.home + score.away;
-    let insight = '';
-    if (total === 0) insight = 'Hiệp 1 không bàn thắng. Thống kê cho thấy 55% trận 0-0 hiệp 1 sẽ có bàn trong hiệp 2.';
-    else if (total >= 3) insight = `Hiệp 1 bùng nổ với ${total} bàn! Tốc độ này dự đoán tổng bàn cuối trận: ${Math.round(total * 2.1)}.`;
-    else insight = `Tỉ số hiệp 1: ${score.home}-${score.away}. 68% trận có bàn trước nghỉ sẽ có thêm bàn ở hiệp 2.`;
+    const style = this.getStyle(matchId);
 
-    this._emit(matchId, `⏸️ NGHỈ GIỮA HIỆP: ${home} ${score.home}-${score.away} ${away}. ${insight}`, 'high', 'halftime');
+    if (voice.isBLVStyle(style)) {
+      const text = voice.getBLVTemplate(style, 'halftime', {
+        home, away, scoreHome: score.home, scoreAway: score.away,
+      });
+      this._emit(matchId, text, 'high', 'halftime');
+    } else {
+      const total = score.home + score.away;
+      let insight = '';
+      if (total === 0) insight = 'Hiệp 1 không bàn thắng. Thống kê cho thấy 55% trận 0-0 hiệp 1 sẽ có bàn trong hiệp 2.';
+      else if (total >= 3) insight = `Hiệp 1 bùng nổ với ${total} bàn! Tốc độ này dự đoán tổng bàn cuối trận: ${Math.round(total * 2.1)}.`;
+      else insight = `Tỉ số hiệp 1: ${score.home}-${score.away}. 68% trận có bàn trước nghỉ sẽ có thêm bàn ở hiệp 2.`;
+
+      this._emit(matchId, `⏸️ NGHỈ GIỮA HIỆP: ${home} ${score.home}-${score.away} ${away}. ${insight}`, 'high', 'halftime');
+    }
   }
 
   _onFulltime(d) {
     const { matchId, home, away, score, winner } = d;
-    const result = winner ? `${winner} CHIẾN THẮNG!` : 'HÒA!';
-    this._emit(matchId,
-      `🏁 KẾT THÚC! ${home} ${score.home}-${score.away} ${away}. ${result}`,
-      'high', 'fulltime');
+    const style = this.getStyle(matchId);
+
+    if (voice.isBLVStyle(style)) {
+      const text = voice.getBLVTemplate(style, 'fulltime', {
+        home, away, scoreHome: score.home, scoreAway: score.away,
+      });
+      this._emit(matchId, text, 'high', 'fulltime');
+    } else {
+      const result = winner ? `${winner} CHIẾN THẮNG!` : 'HÒA!';
+      this._emit(matchId,
+        `🏁 KẾT THÚC! ${home} ${score.home}-${score.away} ${away}. ${result}`,
+        'high', 'fulltime');
+    }
 
     // Smart post-match summary
     const summary = this.matchIncidentSummary.get(matchId);
@@ -258,6 +312,8 @@ class CommentaryEngine {
   _onStatUpdate(d) {
     const { matchId, velocity, currentStats, home, away, minute } = d;
     if (!minute) return;
+    const style = this.getStyle(matchId);
+    const isBLV = voice.isBLVStyle(style);
 
     // Corner kick pressure analysis
     const corners = velocity['Corner kicks'] || velocity['cornerKicks'];
@@ -266,9 +322,14 @@ class CommentaryEngine {
       const rate = Math.max(corners.homeDiff, corners.awayDiff);
       if (rate >= 2) {
         const prob = Math.min(85, 50 + rate * 12);
-        this._emit(matchId,
-          `🚩 ${pressing} dồn ép mạnh - ${rate} phạt góc gần đây. Xác suất có thêm phạt góc: ${prob}%`,
-          'normal', 'insight');
+        if (isBLV) {
+          const text = voice.getBLVTemplate(style, 'insight', { stat: `${pressing} dồn ép mạnh - ${rate} phạt góc gần đây. Xác suất thêm phạt góc: ${prob}%` });
+          this._emit(matchId, text, 'normal', 'insight');
+        } else {
+          this._emit(matchId,
+            `🚩 ${pressing} dồn ép mạnh - ${rate} phạt góc gần đây. Xác suất có thêm phạt góc: ${prob}%`,
+            'normal', 'insight');
+        }
       }
     }
 
@@ -280,9 +341,14 @@ class CommentaryEngine {
       if (hRate >= 3 || aRate >= 3) {
         const pressing = hRate > aRate ? home : away;
         const shotCount = hRate > aRate ? hRate : aRate;
-        this._emit(matchId,
-          `⚡ ${pressing} tấn công dồn dập! ${shotCount} pha dứt điểm trong vài phút qua.`,
-          'normal', 'insight');
+        if (isBLV) {
+          const text = voice.getBLVTemplate(style, 'insight', { stat: `${pressing} tấn công dồn dập! ${shotCount} pha dứt điểm trong vài phút qua` });
+          this._emit(matchId, text, 'normal', 'insight');
+        } else {
+          this._emit(matchId,
+            `⚡ ${pressing} tấn công dồn dập! ${shotCount} pha dứt điểm trong vài phút qua.`,
+            'normal', 'insight');
+        }
       }
     }
 
@@ -291,13 +357,23 @@ class CommentaryEngine {
     if (poss) {
       const hPoss = parseFloat(poss.home) || 50;
       if (hPoss >= 68) {
-        this._emit(matchId,
-          `📊 ${home} kiểm soát bóng áp đảo ${hPoss}%. Đối thủ gần như không chạm bóng. Xu hướng: ${home} sẽ ghi bàn.`,
-          'normal', 'insight');
+        if (isBLV) {
+          const text = voice.getBLVTemplate(style, 'insight', { stat: `${home} kiểm soát bóng áp đảo ${hPoss}%. Đối thủ gần như không chạm bóng` });
+          this._emit(matchId, text, 'normal', 'insight');
+        } else {
+          this._emit(matchId,
+            `📊 ${home} kiểm soát bóng áp đảo ${hPoss}%. Đối thủ gần như không chạm bóng. Xu hướng: ${home} sẽ ghi bàn.`,
+            'normal', 'insight');
+        }
       } else if (hPoss <= 32) {
-        this._emit(matchId,
-          `📊 ${away} hoàn toàn làm chủ thế trận với ${100 - hPoss}% kiểm soát bóng.`,
-          'normal', 'insight');
+        if (isBLV) {
+          const text = voice.getBLVTemplate(style, 'insight', { stat: `${away} hoàn toàn làm chủ thế trận với ${100 - hPoss}% kiểm soát bóng` });
+          this._emit(matchId, text, 'normal', 'insight');
+        } else {
+          this._emit(matchId,
+            `📊 ${away} hoàn toàn làm chủ thế trận với ${100 - hPoss}% kiểm soát bóng.`,
+            'normal', 'insight');
+        }
       }
     }
 
@@ -306,9 +382,14 @@ class CommentaryEngine {
     if (fouls) {
       const totalFouls = (fouls.homeDiff || 0) + (fouls.awayDiff || 0);
       if (totalFouls >= 4) {
-        this._emit(matchId,
-          `⚠️ Trận đấu nóng lên! ${totalFouls} pha phạm lỗi gần đây. Nguy cơ thẻ phạt cao.`,
-          'normal', 'insight');
+        if (isBLV) {
+          const text = voice.getBLVTemplate(style, 'insight', { stat: `Trận đấu nóng lên! ${totalFouls} pha phạm lỗi gần đây. Nguy cơ thẻ phạt cao` });
+          this._emit(matchId, text, 'normal', 'insight');
+        } else {
+          this._emit(matchId,
+            `⚠️ Trận đấu nóng lên! ${totalFouls} pha phạm lỗi gần đây. Nguy cơ thẻ phạt cao.`,
+            'normal', 'insight');
+        }
       }
     }
 
@@ -358,6 +439,7 @@ class CommentaryEngine {
       this.matchNarrative.delete(matchId);
       this.matchContext.delete(matchId);
       this.matchIncidentSummary.delete(matchId);
+      this.activeStyle.delete(matchId);
     }, 600000);
   }
 

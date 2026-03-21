@@ -1,5 +1,5 @@
 // BongDa365 Service Worker - Offline support & caching
-const CACHE_NAME = 'bongda365-v3';
+const CACHE_NAME = 'bongda365-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -10,6 +10,7 @@ const STATIC_ASSETS = [
   '/favourites.js',
   '/sidebar.js',
   '/chat.js',
+  '/push-notifications.js',
   '/app.js',
 ];
 
@@ -53,6 +54,58 @@ self.addEventListener('fetch', event => {
         return response;
       }).catch(() => cached);
       return cached || fetchPromise;
+    })
+  );
+});
+
+// ── Push Notifications ──
+
+// Listen for push events from server
+self.addEventListener('push', event => {
+  const data = event.data ? event.data.json() : {};
+
+  const options = {
+    body: data.body || '',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    vibrate: [100, 50, 100],
+    data: {
+      url: data.url || '/',
+      matchId: data.matchId,
+    },
+    actions: data.actions || [],
+    tag: data.tag || 'default',
+    renotify: true,
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'BongDa365', options)
+  );
+});
+
+// Handle notification click — focus existing window or open new
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+
+  const action = event.action;
+  const data = event.notification.data || {};
+  let url = data.url || '/';
+
+  // Handle action buttons
+  if (action === 'view' && data.matchId) {
+    url = `/#/match/${data.matchId}`;
+  } else if (action === 'predict' && data.matchId) {
+    url = `/#/match/${data.matchId}`;
+  }
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window' }).then(windowClients => {
+      for (const client of windowClients) {
+        if ('focus' in client) {
+          return client.focus().then(c => c.navigate(url));
+        }
+      }
+      return clients.openWindow(url);
     })
   );
 });
