@@ -244,6 +244,19 @@ function termsPage() {
   });
 }
 
+// ── API Response Cache — prevents repeated identical requests to SofaScore ──
+const apiCache = new Map();
+const API_CACHE_TTL = 15000; // 15s for most endpoints
+const API_CACHE_TTL_STATIC = 300000; // 5min for standings, teams, players
+
+function getApiCacheTTL(url) {
+  if (url.includes('/events/live')) return 0; // Live data handled separately via polling
+  if (url.includes('/image')) return 0; // Images handled by imgCache
+  if (url.includes('/standings') || url.includes('/team/') || url.includes('/player/') || url.includes('/seasons')) return API_CACHE_TTL_STATIC;
+  if (url.includes('/scheduled-events/')) return 60000; // 1min for schedule
+  return API_CACHE_TTL;
+}
+
 // ── HTTP Server ──
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -417,6 +430,16 @@ const server = http.createServer(async (req, res) => {
   // Proxy API — with in-memory image cache
   if (req.url.startsWith('/api/')) {
     const isImg = req.url.includes('/image');
+    // Serve cached API responses (non-image, non-live)
+    const cacheTTL = getApiCacheTTL(req.url);
+    if (!isImg && cacheTTL > 0) {
+      const ac = apiCache.get(req.url);
+      if (ac && Date.now() - ac.ts < cacheTTL) {
+        res.writeHead(200, { 'Content-Type':'application/json; charset=utf-8', 'Access-Control-Allow-Origin':'*', 'Cache-Control':`public, max-age=${Math.floor(cacheTTL/1000)}`, 'X-Cache':'HIT' });
+        res.end(ac.body);
+        return;
+      }
+    }
     // Serve cached images instantly (avoid re-proxying)
     if (isImg && imgCache.has(req.url)) {
       const cached = imgCache.get(req.url);
@@ -462,6 +485,24 @@ const server = http.createServer(async (req, res) => {
           imgCache.delete(first);
         }
         return;
+      }
+      // If SofaScore returned a Cloudflare block (403) or server error, return clean error JSON
+      if (result.status === 403 || result.status >= 500) {
+        res.writeHead(502, { 'Content-Type':'application/json; charset=utf-8', 'Access-Control-Allow-Origin':'*' });
+        res.end(JSON.stringify({ error: `SofaScore returned ${result.status}` }));
+        return;
+      }
+      // Cache successful JSON responses
+      if (result.status === 200 && cacheTTL > 0) {
+        apiCache.set(req.url, { body: result.body, ts: Date.now() });
+        // Evict old entries
+        if (apiCache.size > 200) {
+          const now = Date.now();
+          for (const [k, v] of apiCache) {
+            if (now - v.ts > getApiCacheTTL(k)) apiCache.delete(k);
+            if (apiCache.size <= 150) break;
+          }
+        }
       }
       res.writeHead(result.status, { 'Content-Type':ct, 'Access-Control-Allow-Origin':'*', 'Cache-Control':'public, max-age=10' });
       res.end(result.body);
@@ -792,13 +833,13 @@ let cachedLive = null;
 // Otherwise fall back to direct SofaScore API (works from home IP, blocked from datacenter IPs)
 const SOFA_PROXY_URL = process.env.SOFA_PROXY_URL || null;
 
-// Rotate User-Agents to avoid Cloudflare fingerprinting
+// Rotate User-Agents — keep in sync with current browser versions to avoid Cloudflare fingerprinting
 const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15',
 ];
 let uaIdx = 0;
 
@@ -806,32 +847,59 @@ let uaIdx = 0;
 let proxyConsecutiveFailures = 0;
 const MAX_PROXY_FAILURES = 3; // After 3 consecutive failures, try direct as fallback
 
+// Stale data cache — serves last-known-good data when both proxy and direct fail
+const staleCache = new Map();
+const STALE_MAX_AGE = 120000; // Serve stale data up to 2 minutes old
+
 async function fetchSofa(urlPath) {
-  // If SOFA_PROXY_URL is set, route through local proxy (home IP, not blocked)
+  let result = null;
+  let lastError = null;
+
+  // Strategy 1: proxy (home IP via Cloudflare tunnel)
   if (SOFA_PROXY_URL) {
     try {
-      const result = await fetchViaProxy(urlPath);
-      proxyConsecutiveFailures = 0; // Reset on success
-      return result;
+      result = await fetchViaProxy(urlPath);
+      proxyConsecutiveFailures = 0;
     } catch (e) {
       proxyConsecutiveFailures++;
-      if (proxyConsecutiveFailures <= MAX_PROXY_FAILURES) {
-        console.log(`[WARN] Proxy failed (${proxyConsecutiveFailures}/${MAX_PROXY_FAILURES}): ${e.message} — retrying via proxy`);
-        throw e; // Let caller handle
-      }
-      // After MAX failures, try direct as emergency fallback
-      console.log(`[WARN] Proxy failed ${proxyConsecutiveFailures}x — trying direct SofaScore API as fallback`);
-      try {
-        const result = await fetchDirect(urlPath);
-        console.log(`[INFO] Direct fallback succeeded for ${urlPath}`);
-        return result;
-      } catch (e2) {
-        console.log(`[ERROR] Direct fallback also failed: ${e2.message}`);
-        throw e; // Throw original proxy error
-      }
+      lastError = e;
+      console.log(`[WARN] Proxy failed (${proxyConsecutiveFailures}): ${e.message}`);
     }
   }
-  return fetchDirect(urlPath);
+
+  // Strategy 2: direct SofaScore (works from residential IP, may be blocked from datacenter)
+  if (!result) {
+    try {
+      result = await fetchDirect(urlPath);
+      if (result && result.status === 403) {
+        console.log(`[WARN] Direct SofaScore returned 403 (Cloudflare block) for ${urlPath}`);
+        result = null; // Treat 403 as failure
+      } else if (result) {
+        console.log(`[INFO] Direct fallback succeeded for ${urlPath}`);
+      }
+    } catch (e2) {
+      lastError = lastError || e2;
+      console.log(`[WARN] Direct also failed: ${e2.message}`);
+    }
+  }
+
+  // Success — cache for stale fallback
+  if (result && result.status === 200) {
+    staleCache.set(urlPath, { body: result.body, headers: result.headers, ts: Date.now() });
+    return result;
+  }
+
+  // Strategy 3: serve stale cached data if recent enough
+  if (!result || result.status !== 200) {
+    const stale = staleCache.get(urlPath);
+    if (stale && Date.now() - stale.ts < STALE_MAX_AGE) {
+      console.log(`[STALE] Serving cached data for ${urlPath} (age: ${Math.round((Date.now() - stale.ts) / 1000)}s)`);
+      return { status: 200, headers: stale.headers, body: stale.body };
+    }
+  }
+
+  if (result) return result;
+  throw lastError || new Error('All fetch strategies failed');
 }
 
 // Route through local Cloudflare Tunnel proxy
@@ -854,24 +922,31 @@ function fetchViaProxy(urlPath) {
 function fetchDirect(urlPath) {
   return new Promise((resolve, reject) => {
     const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
+    const isFirefox = ua.includes('Firefox');
+    const isSafari = ua.includes('Safari') && !ua.includes('Chrome');
+    // Build headers matching the selected UA to avoid fingerprint mismatch
+    const headers = {
+      'User-Agent': ua,
+      'Accept': urlPath.includes('/image') ? 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' : 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': 'https://www.sofascore.com/',
+      'Origin': 'https://www.sofascore.com',
+      'Cache-Control': 'no-cache',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-site',
+    };
+    // Chrome-specific client hints (don't send for Firefox/Safari UAs)
+    if (!isFirefox && !isSafari) {
+      headers['Sec-CH-UA'] = '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"';
+      headers['Sec-CH-UA-Mobile'] = '?0';
+      headers['Sec-CH-UA-Platform'] = ua.includes('Windows') ? '"Windows"' : ua.includes('Mac') ? '"macOS"' : '"Linux"';
+    }
     const opts = {
       hostname: 'api.sofascore.com',
       path: urlPath,
-      headers: {
-        'User-Agent': ua,
-        'Accept': 'application/json, image/*, */*',
-        'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://www.sofascore.com/',
-        'Origin': 'https://www.sofascore.com',
-        'Cache-Control': 'no-cache',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Sec-CH-UA': '"Chromium";v="131", "Not_A Brand";v="24"',
-        'Sec-CH-UA-Mobile': '?0',
-        'Sec-CH-UA-Platform': '"Windows"',
-      },
+      headers,
     };
     const req = https.get(opts, res => {
       if (res.statusCode === 304) { resolve(null); return; }
@@ -891,14 +966,21 @@ function fetchDirect(urlPath) {
 }
 
 // Main live poll - every 5s
+let lastLiveFetchOk = 0;
+
 async function pollLive() {
   try {
     const result = await fetchSofa('/api/v1/sport/football/events/live');
-    if (!result || result.status !== 200) return;
+    if (!result || result.status !== 200) {
+      const age = cachedLive ? Math.round((Date.now() - lastLiveFetchOk) / 1000) : -1;
+      console.log(`[POLL] Live fetch returned ${result?.status || 'null'} — serving stale data (${age}s old)`);
+      return;
+    }
 
     const body = result.body.toString();
     if (body === cachedLive) return; // No change
     cachedLive = body;
+    lastLiveFetchOk = Date.now();
 
     const data = JSON.parse(body);
     const events = data.events || [];

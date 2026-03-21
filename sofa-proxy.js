@@ -21,9 +21,9 @@ let totalErrors = 0;
 let consecutiveErrors = 0;
 
 const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0',
 ];
 let uaIdx = 0;
 
@@ -92,12 +92,13 @@ const server = http.createServer((req, res) => {
 
   // Fetch from SofaScore
   const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
+  const isImg = req.url.includes('/image');
   const opts = {
     hostname: 'api.sofascore.com',
     path: req.url,
     headers: {
       'User-Agent': ua,
-      'Accept': 'application/json, image/*, */*',
+      'Accept': isImg ? 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' : 'application/json, text/plain, */*',
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept-Encoding': 'gzip, deflate, br',
       'Referer': 'https://www.sofascore.com/',
@@ -106,6 +107,9 @@ const server = http.createServer((req, res) => {
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
+      'Sec-CH-UA': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+      'Sec-CH-UA-Mobile': '?0',
+      'Sec-CH-UA-Platform': '"Windows"',
     },
   };
 
