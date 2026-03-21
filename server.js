@@ -278,6 +278,7 @@ const server = http.createServer(async (req, res) => {
       },
       lastLiveFetch: lastLiveFetchOk ? new Date(lastLiveFetchOk).toISOString() : 'never',
       staleSinceLastLive: lastLiveFetchOk ? Math.round((Date.now() - lastLiveFetchOk) / 1000) + 's' : 'n/a',
+      recentErrors,
     };
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(status, null, 2));
@@ -878,8 +879,15 @@ let proxySkipUntil = 0;
 const staleCache = new Map();
 const STALE_MAX_AGE = 600000; // Serve stale data up to 10 minutes old
 
-// Stats for logging
+// Stats and error tracking for diagnostics
 let fetchStats = { direct: 0, directOk: 0, cfWorker: 0, cfWorkerOk: 0, proxy: 0, proxyOk: 0, curl: 0, curlOk: 0, stale: 0 };
+const recentErrors = []; // Keep last 20 errors for /health diagnostics
+function logError(strategy, urlPath, msg) {
+  const entry = { strategy, path: urlPath, error: msg, ts: new Date().toISOString() };
+  recentErrors.push(entry);
+  if (recentErrors.length > 20) recentErrors.shift();
+  console.log(`[${strategy.toUpperCase()}] ${urlPath} — ${msg}`);
+}
 let directConsecutiveFailures = 0;
 let directSkipUntil = 0;
 
@@ -898,19 +906,19 @@ async function fetchSofa(urlPath) {
         fetchStats.directOk++;
       } else if (result && (result.status === 403 || result.status >= 500)) {
         directConsecutiveFailures++;
+        logError('direct', urlPath, `HTTP ${result.status}`);
         if (directConsecutiveFailures >= MAX_FAILURES_BEFORE_SKIP) {
           directSkipUntil = now + Math.min(directConsecutiveFailures * 60000, 600000);
-          console.log(`[WARN] Direct api.sofascore.app: ${directConsecutiveFailures} failures, skip ${Math.round((directSkipUntil - now) / 1000)}s`);
         }
         result = null;
       }
     } catch (e) {
       directConsecutiveFailures++;
       lastError = e;
+      logError('direct', urlPath, e.message);
       if (directConsecutiveFailures >= MAX_FAILURES_BEFORE_SKIP) {
         directSkipUntil = now + Math.min(directConsecutiveFailures * 60000, 600000);
       }
-      console.log(`[WARN] Direct failed (${directConsecutiveFailures}): ${e.message}`);
     }
   }
 
@@ -924,19 +932,19 @@ async function fetchSofa(urlPath) {
         fetchStats.cfWorkerOk++;
       } else if (result && (result.status === 403 || result.status >= 500)) {
         cfWorkerFailures++;
+        logError('cfWorker', urlPath, `HTTP ${result.status}`);
         if (cfWorkerFailures >= MAX_FAILURES_BEFORE_SKIP) {
-          cfWorkerSkipUntil = now + Math.min(cfWorkerFailures * 30000, 300000); // Backoff: 30s, 60s, ... max 5min
-          console.log(`[WARN] CF Worker: ${cfWorkerFailures} failures, skipping for ${Math.round((cfWorkerSkipUntil - now) / 1000)}s`);
+          cfWorkerSkipUntil = now + Math.min(cfWorkerFailures * 30000, 300000);
         }
         result = null;
       }
     } catch (e) {
       cfWorkerFailures++;
       lastError = e;
+      logError('cfWorker', urlPath, e.message);
       if (cfWorkerFailures >= MAX_FAILURES_BEFORE_SKIP) {
         cfWorkerSkipUntil = now + Math.min(cfWorkerFailures * 30000, 300000);
       }
-      console.log(`[WARN] CF Worker failed (${cfWorkerFailures}): ${e.message}`);
     }
   }
 
@@ -950,32 +958,33 @@ async function fetchSofa(urlPath) {
         fetchStats.proxyOk++;
       } else if (result && (result.status === 403 || result.status >= 500)) {
         proxyConsecutiveFailures++;
+        logError('proxy', urlPath, `HTTP ${result.status}`);
         result = null;
       }
     } catch (e) {
       proxyConsecutiveFailures++;
       lastError = lastError || e;
+      logError('proxy', urlPath, e.message);
       if (proxyConsecutiveFailures >= MAX_FAILURES_BEFORE_SKIP) {
-        proxySkipUntil = now + 60000; // Skip proxy for 1min
+        proxySkipUntil = now + 60000;
       }
-      console.log(`[WARN] Proxy failed (${proxyConsecutiveFailures}): ${e.message}`);
     }
   }
 
-  // Strategy 3: curl (OpenSSL TLS fingerprint — different JA3 from Node.js)
+  // Strategy 3: curl (try api.sofascore.app then api.sofascore.com)
   if (!result) {
     try {
       fetchStats.curl++;
       result = await fetchViaCurl(urlPath);
       if (result && (result.status === 403 || result.status >= 500)) {
-        console.log(`[WARN] curl returned ${result.status} for ${urlPath}`);
+        logError('curl', urlPath, `HTTP ${result.status}`);
         result = null;
       } else if (result && result.status === 200) {
         fetchStats.curlOk++;
       }
     } catch (e2) {
       lastError = lastError || e2;
-      console.log(`[WARN] curl failed: ${e2.message}`);
+      logError('curl', urlPath, e2.message);
     }
   }
 

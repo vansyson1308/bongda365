@@ -157,18 +157,24 @@ export default {
     const cacheTtl = getCacheTtl(url.pathname, isImg);
     let lastError = null;
 
+    const errors = []; // Collect errors from all targets for debugging
+
     // Try each API target in order
     for (const target of API_TARGETS) {
       try {
         const sofaUrl = target.base + url.pathname + url.search;
-        const resp = await fetch(sofaUrl, {
-          headers: target.headers(ua, isImg),
-          cf: { cacheTtl, cacheEverything: true },
-        });
+        // IMPORTANT: only use `cf` cache options for Cloudflare-proxied origins.
+        // api.sofascore.app is plain nginx — `cf` options cause fetch errors on non-CF origins.
+        const fetchOpts = { headers: target.headers(ua, isImg) };
+        if (target.name === 'sofascore-com') {
+          fetchOpts.cf = { cacheTtl, cacheEverything: true };
+        }
+        const resp = await fetch(sofaUrl, fetchOpts);
 
         if (resp.status === 403 || resp.status >= 500) {
           stats.byTarget[target.name] = (stats.byTarget[target.name] || { ok: 0, fail: 0 });
           stats.byTarget[target.name].fail++;
+          errors.push(`${target.name}: HTTP ${resp.status}`);
           lastError = new Error(`${target.name}: ${resp.status}`);
           continue; // Try next target
         }
@@ -201,6 +207,7 @@ export default {
 
       } catch (e) {
         lastError = e;
+        errors.push(`${target.name}: ${e.message}`);
         stats.byTarget[target.name] = stats.byTarget[target.name] || { ok: 0, fail: 0 };
         stats.byTarget[target.name].fail++;
       }
@@ -211,7 +218,7 @@ export default {
     rejectInflight(lastError);
     inflight.delete(cacheKey);
 
-    return new Response(JSON.stringify({ error: lastError?.message || 'All targets failed' }), {
+    return new Response(JSON.stringify({ error: 'All targets failed', details: errors }), {
       status: 502,
       headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
