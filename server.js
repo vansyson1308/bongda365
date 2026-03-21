@@ -264,6 +264,26 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', '*');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
+  // Health/status endpoint — shows fetch strategy performance
+  if (req.url === '/health') {
+    const status = {
+      uptime: Math.floor(process.uptime()),
+      fetchStats,
+      strategies: {
+        direct: Date.now() > directSkipUntil ? 'active' : `backoff (${Math.round((directSkipUntil - Date.now()) / 1000)}s)`,
+        cfWorker: CF_WORKER_URL ? (Date.now() > cfWorkerSkipUntil ? 'active' : `backoff (${Math.round((cfWorkerSkipUntil - Date.now()) / 1000)}s)`) : 'not configured',
+        proxy: SOFA_PROXY_URL ? (Date.now() > proxySkipUntil ? 'active' : `backoff (${Math.round((proxySkipUntil - Date.now()) / 1000)}s)`) : 'not configured',
+        curl: 'always available (sofascore.app → sofascore.com)',
+        staleCache: staleCache.size + ' entries',
+      },
+      lastLiveFetch: lastLiveFetchOk ? new Date(lastLiveFetchOk).toISOString() : 'never',
+      staleSinceLastLive: lastLiveFetchOk ? Math.round((Date.now() - lastLiveFetchOk) / 1000) + 's' : 'n/a',
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(status, null, 2));
+    return;
+  }
+
   // Cached live data (instant)
   if (req.url === '/api/v1/sport/football/events/live' && cachedLive) {
     res.writeHead(200, { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'public, max-age=3' });
@@ -829,11 +849,15 @@ bus.on('kickoff', d => {
 // ── SofaScore Polling ──
 let cachedLive = null;
 
-// Proxy URL: if SOFA_PROXY_URL is set, route API calls through local proxy (bypasses Cloudflare)
-// Otherwise fall back to direct SofaScore API (works from home IP, blocked from datacenter IPs)
+// ── SofaScore Fetch Strategy Chain ──
+// Priority: Direct api.sofascore.app → CF Worker → Local Proxy → curl → Stale cache
+//
+// KEY DISCOVERY: api.sofascore.app (mobile API) runs on plain nginx, NOT behind Cloudflare.
+// Same data, same endpoints, CORS: *. No bot detection, no JA3/JA4 checks, no IP reputation.
+// This is the most reliable strategy from any IP (datacenter or residential).
+const CF_WORKER_URL = process.env.CF_WORKER_URL || null;
 const SOFA_PROXY_URL = process.env.SOFA_PROXY_URL || null;
 
-// Rotate User-Agents — keep in sync with current browser versions to avoid Cloudflare fingerprinting
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
@@ -843,39 +867,111 @@ const USER_AGENTS = [
 ];
 let uaIdx = 0;
 
-// Track proxy health to decide fallback strategy
+// Track health per strategy
+let cfWorkerFailures = 0;
 let proxyConsecutiveFailures = 0;
-const MAX_PROXY_FAILURES = 3; // After 3 consecutive failures, try direct as fallback
+const MAX_FAILURES_BEFORE_SKIP = 5; // Skip a strategy temporarily after 5 consecutive failures
+let cfWorkerSkipUntil = 0; // Timestamp — skip CF Worker until this time (backoff)
+let proxySkipUntil = 0;
 
-// Stale data cache — serves last-known-good data when both proxy and direct fail
+// Stale data cache — serves last-known-good data when all strategies fail
 const staleCache = new Map();
-const STALE_MAX_AGE = 300000; // Serve stale data up to 5 minutes old
+const STALE_MAX_AGE = 600000; // Serve stale data up to 10 minutes old
+
+// Stats for logging
+let fetchStats = { direct: 0, directOk: 0, cfWorker: 0, cfWorkerOk: 0, proxy: 0, proxyOk: 0, curl: 0, curlOk: 0, stale: 0 };
+let directConsecutiveFailures = 0;
+let directSkipUntil = 0;
 
 async function fetchSofa(urlPath) {
   let result = null;
   let lastError = null;
+  const now = Date.now();
 
-  // Strategy 1: proxy (home IP via Cloudflare tunnel)
-  if (SOFA_PROXY_URL) {
+  // Strategy 0: Direct to api.sofascore.app (mobile API — NO Cloudflare, plain nginx)
+  if (now > directSkipUntil) {
     try {
+      fetchStats.direct++;
+      result = await fetchDirect(urlPath);
+      if (result && result.status === 200) {
+        directConsecutiveFailures = 0;
+        fetchStats.directOk++;
+      } else if (result && (result.status === 403 || result.status >= 500)) {
+        directConsecutiveFailures++;
+        if (directConsecutiveFailures >= MAX_FAILURES_BEFORE_SKIP) {
+          directSkipUntil = now + Math.min(directConsecutiveFailures * 60000, 600000);
+          console.log(`[WARN] Direct api.sofascore.app: ${directConsecutiveFailures} failures, skip ${Math.round((directSkipUntil - now) / 1000)}s`);
+        }
+        result = null;
+      }
+    } catch (e) {
+      directConsecutiveFailures++;
+      lastError = e;
+      if (directConsecutiveFailures >= MAX_FAILURES_BEFORE_SKIP) {
+        directSkipUntil = now + Math.min(directConsecutiveFailures * 60000, 600000);
+      }
+      console.log(`[WARN] Direct failed (${directConsecutiveFailures}): ${e.message}`);
+    }
+  }
+
+  // Strategy 1: Cloudflare Worker
+  if (!result && CF_WORKER_URL && now > cfWorkerSkipUntil) {
+    try {
+      fetchStats.cfWorker++;
+      result = await fetchViaCFWorker(urlPath);
+      if (result && result.status === 200) {
+        cfWorkerFailures = 0;
+        fetchStats.cfWorkerOk++;
+      } else if (result && (result.status === 403 || result.status >= 500)) {
+        cfWorkerFailures++;
+        if (cfWorkerFailures >= MAX_FAILURES_BEFORE_SKIP) {
+          cfWorkerSkipUntil = now + Math.min(cfWorkerFailures * 30000, 300000); // Backoff: 30s, 60s, ... max 5min
+          console.log(`[WARN] CF Worker: ${cfWorkerFailures} failures, skipping for ${Math.round((cfWorkerSkipUntil - now) / 1000)}s`);
+        }
+        result = null;
+      }
+    } catch (e) {
+      cfWorkerFailures++;
+      lastError = e;
+      if (cfWorkerFailures >= MAX_FAILURES_BEFORE_SKIP) {
+        cfWorkerSkipUntil = now + Math.min(cfWorkerFailures * 30000, 300000);
+      }
+      console.log(`[WARN] CF Worker failed (${cfWorkerFailures}): ${e.message}`);
+    }
+  }
+
+  // Strategy 2: Local proxy (home IP via Cloudflare Tunnel)
+  if (!result && SOFA_PROXY_URL && now > proxySkipUntil) {
+    try {
+      fetchStats.proxy++;
       result = await fetchViaProxy(urlPath);
-      proxyConsecutiveFailures = 0;
+      if (result && result.status === 200) {
+        proxyConsecutiveFailures = 0;
+        fetchStats.proxyOk++;
+      } else if (result && (result.status === 403 || result.status >= 500)) {
+        proxyConsecutiveFailures++;
+        result = null;
+      }
     } catch (e) {
       proxyConsecutiveFailures++;
-      lastError = e;
+      lastError = lastError || e;
+      if (proxyConsecutiveFailures >= MAX_FAILURES_BEFORE_SKIP) {
+        proxySkipUntil = now + 60000; // Skip proxy for 1min
+      }
       console.log(`[WARN] Proxy failed (${proxyConsecutiveFailures}): ${e.message}`);
     }
   }
 
-  // Strategy 2: curl (OpenSSL TLS fingerprint — bypasses Cloudflare JA3 detection)
+  // Strategy 3: curl (OpenSSL TLS fingerprint — different JA3 from Node.js)
   if (!result) {
     try {
+      fetchStats.curl++;
       result = await fetchViaCurl(urlPath);
       if (result && (result.status === 403 || result.status >= 500)) {
         console.log(`[WARN] curl returned ${result.status} for ${urlPath}`);
         result = null;
       } else if (result && result.status === 200) {
-        console.log(`[OK] curl succeeded for ${urlPath}`);
+        fetchStats.curlOk++;
       }
     } catch (e2) {
       lastError = lastError || e2;
@@ -889,10 +985,11 @@ async function fetchSofa(urlPath) {
     return result;
   }
 
-  // Strategy 3: serve stale cached data if recent enough
+  // Strategy 4: serve stale cached data if recent enough
   if (!result || result.status !== 200) {
     const stale = staleCache.get(urlPath);
     if (stale && Date.now() - stale.ts < STALE_MAX_AGE) {
+      fetchStats.stale++;
       console.log(`[STALE] Serving cached data for ${urlPath} (age: ${Math.round((Date.now() - stale.ts) / 1000)}s)`);
       return { status: 200, headers: stale.headers, body: stale.body };
     }
@@ -902,45 +999,127 @@ async function fetchSofa(urlPath) {
   throw lastError || new Error('All fetch strategies failed');
 }
 
-// Route through local Cloudflare Tunnel proxy
+// ── Strategy 0: Direct to api.sofascore.app (mobile API) ──
+// This is NOT behind Cloudflare (plain nginx). No bot detection, no JA3/JA4.
+// Works from any IP. Same data format as api.sofascore.com.
+function fetchDirect(urlPath) {
+  return new Promise((resolve, reject) => {
+    const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
+    const isImg = urlPath.includes('/image');
+    const opts = {
+      hostname: 'api.sofascore.app',
+      path: urlPath,
+      timeout: 12000,
+      headers: {
+        'User-Agent': ua,
+        'Accept': isImg ? 'image/*,*/*' : 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+    };
+
+    const req = https.get(opts, res => {
+      // Decompress
+      const encoding = res.headers['content-encoding'];
+      let stream = res;
+      const zlib = require('zlib');
+      if (encoding === 'gzip') stream = res.pipe(zlib.createGunzip());
+      else if (encoding === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+      else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
+
+      const chunks = [];
+      stream.on('data', c => chunks.push(c));
+      stream.on('end', () => {
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+      stream.on('error', e => reject(new Error(`direct stream: ${e.message}`)));
+    });
+    req.on('error', e => reject(new Error(`direct: ${e.message}`)));
+    req.on('timeout', () => { req.destroy(); reject(new Error('direct: timeout')); });
+  });
+}
+
+// ── Strategy 1: Cloudflare Worker ──
+function fetchViaCFWorker(urlPath) {
+  return new Promise((resolve, reject) => {
+    const workerUrl = new URL(CF_WORKER_URL + urlPath);
+    const mod = workerUrl.protocol === 'https:' ? https : http;
+    const req = mod.get(workerUrl.href, {
+      headers: {
+        'Accept': urlPath.includes('/image') ? 'image/*,*/*' : 'application/json',
+        'X-Source': 'bongda365-server',
+      },
+      timeout: 12000,
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('cf-worker timeout')); });
+  });
+}
+
+// ── Strategy 2: Local Proxy (Cloudflare Tunnel) ──
 function fetchViaProxy(urlPath) {
   return new Promise((resolve, reject) => {
     const proxyUrl = new URL(SOFA_PROXY_URL + urlPath);
     const mod = proxyUrl.protocol === 'https:' ? https : http;
-    const req = mod.get(proxyUrl.href, { headers: { 'Accept': '*/*' } }, res => {
+    const req = mod.get(proxyUrl.href, { headers: { 'Accept': '*/*' }, timeout: 15000 }, res => {
       if (res.statusCode === 304) { resolve(null); return; }
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
     });
     req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('proxy timeout')); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('proxy timeout')); });
   });
 }
 
-// Direct to SofaScore via curl — completely different TLS fingerprint (OpenSSL)
-// Node.js (both https and undici) has detectable JA3/JA4 TLS fingerprints.
-// curl uses the system's OpenSSL which produces a browser-like TLS handshake
-// that Cloudflare's bot detection is much less likely to flag.
+// ── Strategy 3: curl — try api.sofascore.app (no Cloudflare) first, then api.sofascore.com ──
 const { execFile } = require('child_process');
 
+// api.sofascore.app: mobile API, plain nginx, no bot detection, CORS: *
+// api.sofascore.com: main API, behind Cloudflare WAF
+const CURL_TARGETS = [
+  'https://api.sofascore.app',
+  'https://api.sofascore.com',
+];
+
 function fetchViaCurl(urlPath) {
+  return new Promise(async (resolve, reject) => {
+    for (const baseUrl of CURL_TARGETS) {
+      try {
+        const result = await curlRequest(baseUrl + urlPath, urlPath.includes('/image'));
+        if (result.status === 200) return resolve(result);
+        if (result.status !== 403) return resolve(result); // Non-403 errors still returned
+      } catch (e) {
+        // Try next target
+      }
+    }
+    reject(new Error('curl: all targets failed'));
+  });
+}
+
+function curlRequest(url, isImg) {
   return new Promise((resolve, reject) => {
     const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
-    const url = 'https://api.sofascore.com' + urlPath;
-    const isImg = urlPath.includes('/image');
-
     const args = [
       '-s', '-L', '--compressed',
       '--max-time', '12',
       '-H', `User-Agent: ${ua}`,
-      '-H', `Accept: ${isImg ? 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8' : 'application/json, text/plain, */*'}`,
+      '-H', `Accept: ${isImg ? 'image/*,*/*' : 'application/json'}`,
       '-H', 'Accept-Language: en-US,en;q=0.9',
-      '-H', 'Referer: https://www.sofascore.com/',
-      '-H', 'Origin: https://www.sofascore.com',
-      '-H', 'Sec-Fetch-Dest: empty',
-      '-H', 'Sec-Fetch-Mode: cors',
-      '-H', 'Sec-Fetch-Site: same-site',
       '-w', '\n__HTTP_STATUS__%{http_code}',
       url,
     ];
@@ -948,7 +1127,6 @@ function fetchViaCurl(urlPath) {
     execFile('curl', args, { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024, timeout: 15000 }, (err, stdout) => {
       if (err) return reject(new Error(`curl: ${err.message}`));
 
-      // Parse status code from the appended marker
       const output = stdout;
       const marker = Buffer.from('\n__HTTP_STATUS__');
       const markerIdx = output.lastIndexOf(marker);
@@ -1130,6 +1308,14 @@ setInterval(pollIncidents, INCIDENT_POLL_MS);
 setInterval(pollStats, STAT_POLL_MS);
 setInterval(pollOdds, 60000); // Odds change slowly, 60s is enough
 pollLive();
+
+// Log fetch strategy performance every 5 minutes
+setInterval(() => {
+  const s = fetchStats;
+  const total = s.directOk + s.cfWorkerOk + s.proxyOk + s.curlOk + s.stale;
+  if (total === 0) return;
+  console.log(`[FETCH STATS] Direct: ${s.directOk}/${s.direct} | CF Worker: ${s.cfWorkerOk}/${s.cfWorker} | Proxy: ${s.proxyOk}/${s.proxy} | curl: ${s.curlOk}/${s.curl} | Stale: ${s.stale}`);
+}, 300000);
 newsEngine.start();
 // Stats engine needs the fetchSofa function to access SofaScore API
 statsEngine.setFetchFn(fetchSofa);
@@ -1156,8 +1342,18 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+  const strategies = [];
+  strategies.push('Direct api.sofascore.app (no Cloudflare)');
+  if (CF_WORKER_URL) strategies.push(`CF Worker: ${CF_WORKER_URL}`);
+  if (SOFA_PROXY_URL) strategies.push(`Local Proxy: ${SOFA_PROXY_URL}`);
+  strategies.push('curl → sofascore.app/com');
+  strategies.push('Stale cache (10min)');
+
   console.log(`
-  ⚽ BongDa365 v5.0 - http://localhost:${PORT}
+  ⚽ BongDa365 v5.1 - http://localhost:${PORT}
+
+  SofaScore Fetch Chain (${strategies.length} strategies):
+    ${strategies.map((s, i) => `${i + 1}. ${s}`).join('\n    ')}
 
   Architecture: Event Bus + SPA Router
     SofaScore ──→ Detector ──→ Event Bus ──→ Commentary Engine
@@ -1165,9 +1361,7 @@ server.listen(PORT, '0.0.0.0', () => {
                                           ──→ Socket.io (Chat + UI)
                                           ──→ Ngựa Tiên Tri (Mascot)
 
-  Pages: Live | Match Detail | League | Team | Player | Search
   Poll: Live ${POLL_MS/1000}s | Incidents ${INCIDENT_POLL_MS/1000}s | Stats ${STAT_POLL_MS/1000}s
-  Optimized: Socket.io push + perMessageDeflate + priority incident polling
-  Features: AI Commentary | Predictions | Chat | Viral Cards
+  Health: http://localhost:${PORT}/health
   `);
 });

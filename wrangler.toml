@@ -1,0 +1,9 @@
+name = "sofa-proxy"
+main = "cf-worker-proxy.js"
+compatibility_date = "2024-12-01"
+
+# Free plan: 100k requests/day, 10ms CPU time per request
+# This is more than enough for BongDa365's polling (~17k req/day for live + incidents + stats)
+
+[observability]
+enabled = true

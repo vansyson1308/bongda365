@@ -10,5 +10,6 @@ services:
         value: production
       - key: PORT
         value: 3000
-      # SOFA_PROXY_URL: set via Render dashboard if external proxy is available
-      # Without proxy, server uses undici fetch + https.get + stale cache fallback
+      # CF_WORKER_URL: Cloudflare Worker proxy (primary — same CF network, never blocked)
+      # Deploy cf-worker-proxy.js then set URL here, e.g. https://sofa-proxy.<your-subdomain>.workers.dev
+      # SOFA_PROXY_URL: local proxy via Cloudflare Tunnel (secondary fallback)
