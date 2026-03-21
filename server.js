@@ -867,35 +867,19 @@ async function fetchSofa(urlPath) {
     }
   }
 
-  // Strategy 2: direct via undici fetch (different TLS fingerprint, harder to detect)
+  // Strategy 2: curl (OpenSSL TLS fingerprint — bypasses Cloudflare JA3 detection)
   if (!result) {
     try {
-      result = await fetchDirect(urlPath);
+      result = await fetchViaCurl(urlPath);
       if (result && (result.status === 403 || result.status >= 500)) {
-        console.log(`[WARN] Fetch (undici) returned ${result.status} for ${urlPath}`);
+        console.log(`[WARN] curl returned ${result.status} for ${urlPath}`);
         result = null;
-      } else if (result) {
-        console.log(`[INFO] Fetch (undici) succeeded for ${urlPath}`);
+      } else if (result && result.status === 200) {
+        console.log(`[OK] curl succeeded for ${urlPath}`);
       }
     } catch (e2) {
       lastError = lastError || e2;
-      console.log(`[WARN] Fetch (undici) failed: ${e2.message}`);
-    }
-  }
-
-  // Strategy 3: legacy https.get (different TLS stack, sometimes works when undici doesn't)
-  if (!result) {
-    try {
-      result = await fetchDirectLegacy(urlPath);
-      if (result && (result.status === 403 || result.status >= 500)) {
-        console.log(`[WARN] Legacy https returned ${result.status} for ${urlPath}`);
-        result = null;
-      } else if (result) {
-        console.log(`[INFO] Legacy https succeeded for ${urlPath}`);
-      }
-    } catch (e3) {
-      lastError = lastError || e3;
-      console.log(`[WARN] Legacy https failed: ${e3.message}`);
+      console.log(`[WARN] curl failed: ${e2.message}`);
     }
   }
 
@@ -905,7 +889,7 @@ async function fetchSofa(urlPath) {
     return result;
   }
 
-  // Strategy 4: serve stale cached data if recent enough
+  // Strategy 3: serve stale cached data if recent enough
   if (!result || result.status !== 200) {
     const stale = staleCache.get(urlPath);
     if (stale && Date.now() - stale.ts < STALE_MAX_AGE) {
@@ -934,81 +918,53 @@ function fetchViaProxy(urlPath) {
   });
 }
 
-// Direct to SofaScore — uses built-in fetch (undici) for better TLS fingerprint
-// Node.js https module has a known TLS fingerprint that Cloudflare easily detects.
-// undici (built-in fetch) uses a different HTTP stack with HTTP/2 support,
-// making it harder for Cloudflare to distinguish from real browsers.
-async function fetchDirect(urlPath) {
-  const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
-  const isFirefox = ua.includes('Firefox');
-  const isSafari = ua.includes('Safari') && !ua.includes('Chrome');
-  const headers = {
-    'User-Agent': ua,
-    'Accept': urlPath.includes('/image') ? 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' : 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
-    'Referer': 'https://www.sofascore.com/',
-    'Origin': 'https://www.sofascore.com',
-    'Cache-Control': 'no-cache',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-site',
-  };
-  if (!isFirefox && !isSafari) {
-    headers['Sec-CH-UA'] = '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"';
-    headers['Sec-CH-UA-Mobile'] = '?0';
-    headers['Sec-CH-UA-Platform'] = ua.includes('Windows') ? '"Windows"' : ua.includes('Mac') ? '"macOS"' : '"Linux"';
-  }
+// Direct to SofaScore via curl — completely different TLS fingerprint (OpenSSL)
+// Node.js (both https and undici) has detectable JA3/JA4 TLS fingerprints.
+// curl uses the system's OpenSSL which produces a browser-like TLS handshake
+// that Cloudflare's bot detection is much less likely to flag.
+const { execFile } = require('child_process');
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const resp = await fetch('https://api.sofascore.com' + urlPath, {
-      headers,
-      signal: controller.signal,
-    });
-    const buf = Buffer.from(await resp.arrayBuffer());
-    // Convert fetch headers to plain object
-    const respHeaders = {};
-    resp.headers.forEach((v, k) => { respHeaders[k] = v; });
-    return { status: resp.status, headers: respHeaders, body: buf };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-// Legacy https fallback — used if built-in fetch is unavailable (Node < 18)
-function fetchDirectLegacy(urlPath) {
+function fetchViaCurl(urlPath) {
   return new Promise((resolve, reject) => {
     const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
-    const opts = {
-      hostname: 'api.sofascore.com',
-      path: urlPath,
-      headers: {
-        'User-Agent': ua,
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://www.sofascore.com/',
-        'Origin': 'https://www.sofascore.com',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-      },
-    };
-    const req = https.get(opts, res => {
-      if (res.statusCode === 304) { resolve(null); return; }
-      const encoding = res.headers['content-encoding'];
-      let stream = res;
-      if (encoding === 'gzip') { const zlib = require('zlib'); stream = res.pipe(zlib.createGunzip()); }
-      else if (encoding === 'br') { const zlib = require('zlib'); stream = res.pipe(zlib.createBrotliDecompress()); }
-      else if (encoding === 'deflate') { const zlib = require('zlib'); stream = res.pipe(zlib.createInflate()); }
-      const chunks = [];
-      stream.on('data', c => chunks.push(c));
-      stream.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
-      stream.on('error', reject);
+    const url = 'https://api.sofascore.com' + urlPath;
+    const isImg = urlPath.includes('/image');
+
+    const args = [
+      '-s', '-L', '--compressed',
+      '--max-time', '12',
+      '-H', `User-Agent: ${ua}`,
+      '-H', `Accept: ${isImg ? 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8' : 'application/json, text/plain, */*'}`,
+      '-H', 'Accept-Language: en-US,en;q=0.9',
+      '-H', 'Referer: https://www.sofascore.com/',
+      '-H', 'Origin: https://www.sofascore.com',
+      '-H', 'Sec-Fetch-Dest: empty',
+      '-H', 'Sec-Fetch-Mode: cors',
+      '-H', 'Sec-Fetch-Site: same-site',
+      '-w', '\n__HTTP_STATUS__%{http_code}',
+      url,
+    ];
+
+    execFile('curl', args, { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024, timeout: 15000 }, (err, stdout) => {
+      if (err) return reject(new Error(`curl: ${err.message}`));
+
+      // Parse status code from the appended marker
+      const output = stdout;
+      const marker = Buffer.from('\n__HTTP_STATUS__');
+      const markerIdx = output.lastIndexOf(marker);
+
+      if (markerIdx === -1) return reject(new Error('curl: no status marker'));
+
+      const statusStr = output.slice(markerIdx + marker.length).toString().trim();
+      const status = parseInt(statusStr) || 0;
+      const body = output.slice(0, markerIdx);
+
+      resolve({
+        status,
+        headers: { 'content-type': isImg ? 'image/png' : 'application/json' },
+        body,
+      });
     });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 
