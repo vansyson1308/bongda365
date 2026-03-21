@@ -849,7 +849,7 @@ const MAX_PROXY_FAILURES = 3; // After 3 consecutive failures, try direct as fal
 
 // Stale data cache — serves last-known-good data when both proxy and direct fail
 const staleCache = new Map();
-const STALE_MAX_AGE = 120000; // Serve stale data up to 2 minutes old
+const STALE_MAX_AGE = 300000; // Serve stale data up to 5 minutes old
 
 async function fetchSofa(urlPath) {
   let result = null;
@@ -867,19 +867,35 @@ async function fetchSofa(urlPath) {
     }
   }
 
-  // Strategy 2: direct SofaScore (works from residential IP, may be blocked from datacenter)
+  // Strategy 2: direct via undici fetch (different TLS fingerprint, harder to detect)
   if (!result) {
     try {
       result = await fetchDirect(urlPath);
-      if (result && result.status === 403) {
-        console.log(`[WARN] Direct SofaScore returned 403 (Cloudflare block) for ${urlPath}`);
-        result = null; // Treat 403 as failure
+      if (result && (result.status === 403 || result.status >= 500)) {
+        console.log(`[WARN] Fetch (undici) returned ${result.status} for ${urlPath}`);
+        result = null;
       } else if (result) {
-        console.log(`[INFO] Direct fallback succeeded for ${urlPath}`);
+        console.log(`[INFO] Fetch (undici) succeeded for ${urlPath}`);
       }
     } catch (e2) {
       lastError = lastError || e2;
-      console.log(`[WARN] Direct also failed: ${e2.message}`);
+      console.log(`[WARN] Fetch (undici) failed: ${e2.message}`);
+    }
+  }
+
+  // Strategy 3: legacy https.get (different TLS stack, sometimes works when undici doesn't)
+  if (!result) {
+    try {
+      result = await fetchDirectLegacy(urlPath);
+      if (result && (result.status === 403 || result.status >= 500)) {
+        console.log(`[WARN] Legacy https returned ${result.status} for ${urlPath}`);
+        result = null;
+      } else if (result) {
+        console.log(`[INFO] Legacy https succeeded for ${urlPath}`);
+      }
+    } catch (e3) {
+      lastError = lastError || e3;
+      console.log(`[WARN] Legacy https failed: ${e3.message}`);
     }
   }
 
@@ -889,7 +905,7 @@ async function fetchSofa(urlPath) {
     return result;
   }
 
-  // Strategy 3: serve stale cached data if recent enough
+  // Strategy 4: serve stale cached data if recent enough
   if (!result || result.status !== 200) {
     const stale = staleCache.get(urlPath);
     if (stale && Date.now() - stale.ts < STALE_MAX_AGE) {
@@ -918,35 +934,66 @@ function fetchViaProxy(urlPath) {
   });
 }
 
-// Direct to SofaScore (works from home IP, blocked from datacenter)
-function fetchDirect(urlPath) {
+// Direct to SofaScore — uses built-in fetch (undici) for better TLS fingerprint
+// Node.js https module has a known TLS fingerprint that Cloudflare easily detects.
+// undici (built-in fetch) uses a different HTTP stack with HTTP/2 support,
+// making it harder for Cloudflare to distinguish from real browsers.
+async function fetchDirect(urlPath) {
+  const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
+  const isFirefox = ua.includes('Firefox');
+  const isSafari = ua.includes('Safari') && !ua.includes('Chrome');
+  const headers = {
+    'User-Agent': ua,
+    'Accept': urlPath.includes('/image') ? 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' : 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
+    'Referer': 'https://www.sofascore.com/',
+    'Origin': 'https://www.sofascore.com',
+    'Cache-Control': 'no-cache',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-site',
+  };
+  if (!isFirefox && !isSafari) {
+    headers['Sec-CH-UA'] = '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"';
+    headers['Sec-CH-UA-Mobile'] = '?0';
+    headers['Sec-CH-UA-Platform'] = ua.includes('Windows') ? '"Windows"' : ua.includes('Mac') ? '"macOS"' : '"Linux"';
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const resp = await fetch('https://api.sofascore.com' + urlPath, {
+      headers,
+      signal: controller.signal,
+    });
+    const buf = Buffer.from(await resp.arrayBuffer());
+    // Convert fetch headers to plain object
+    const respHeaders = {};
+    resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+    return { status: resp.status, headers: respHeaders, body: buf };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Legacy https fallback — used if built-in fetch is unavailable (Node < 18)
+function fetchDirectLegacy(urlPath) {
   return new Promise((resolve, reject) => {
     const ua = USER_AGENTS[uaIdx++ % USER_AGENTS.length];
-    const isFirefox = ua.includes('Firefox');
-    const isSafari = ua.includes('Safari') && !ua.includes('Chrome');
-    // Build headers matching the selected UA to avoid fingerprint mismatch
-    const headers = {
-      'User-Agent': ua,
-      'Accept': urlPath.includes('/image') ? 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' : 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Referer': 'https://www.sofascore.com/',
-      'Origin': 'https://www.sofascore.com',
-      'Cache-Control': 'no-cache',
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-site',
-    };
-    // Chrome-specific client hints (don't send for Firefox/Safari UAs)
-    if (!isFirefox && !isSafari) {
-      headers['Sec-CH-UA'] = '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"';
-      headers['Sec-CH-UA-Mobile'] = '?0';
-      headers['Sec-CH-UA-Platform'] = ua.includes('Windows') ? '"Windows"' : ua.includes('Mac') ? '"macOS"' : '"Linux"';
-    }
     const opts = {
       hostname: 'api.sofascore.com',
       path: urlPath,
-      headers,
+      headers: {
+        'User-Agent': ua,
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.sofascore.com/',
+        'Origin': 'https://www.sofascore.com',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+      },
     };
     const req = https.get(opts, res => {
       if (res.statusCode === 304) { resolve(null); return; }

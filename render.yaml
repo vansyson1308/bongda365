@@ -10,5 +10,5 @@ services:
         value: production
       - key: PORT
         value: 3000
-      - key: SOFA_PROXY_URL
-        value: https://sofa-proxy.lesonvs1997.workers.dev
+      # SOFA_PROXY_URL: set via Render dashboard if external proxy is available
+      # Without proxy, server uses undici fetch + https.get + stale cache fallback
